@@ -19,14 +19,14 @@ cash.
 ## Requirements
 
 - Wealthfolio **3.5+** (desktop or self-hosted server mode).
-- A SimpleFIN Bridge **access URL** (`https://user:pass@bridge.simplefin.org/simplefin`).
+- A SimpleFIN Bridge **setup token** (from *Connect your bank* at `bridge.simplefin.org`).
 - One Wealthfolio account per brokerage, set to **HOLDINGS** tracking mode.
 
 ## Usage
 
 1. Install the addon (see **Install** below) and open **SimpleFIN Sync** from the sidebar.
-2. **Step 1** — paste your SimpleFIN access URL and click *Save*. It is stored in the
-   system keyring via the addon's private secrets store, never in plain text.
+2. **Step 1** — paste your SimpleFIN setup token and click *Save*. It is claimed once and the
+   resulting access stored in the system keyring via the addon's private secrets store, never in plain text.
 3. **Step 2** — click *Refresh from SimpleFIN* to list brokerage accounts that report
    holdings, then map each one to a HOLDINGS-mode Wealthfolio account.
 4. **Step 3** — click *Sync now* to write today's snapshot for every mapped account.
