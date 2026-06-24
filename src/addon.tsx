@@ -159,17 +159,17 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
 
           {/* Step 1 — credentials */}
           <section className="rounded-lg border p-4">
-            <h2 className="mb-1 text-base font-semibold">1. SimpleFIN access URL</h2>
+            <h2 className="mb-1 text-base font-semibold">1. SimpleFIN setup token</h2>
             <p className="text-muted-foreground mb-3 text-sm">
-              Paste your full SimpleFIN access URL (it looks like{" "}
-              <code>https://user:pass@bridge.simplefin.org/simplefin</code>). It is stored in the
-              system keyring, never in plain text.
+              Paste the setup token SimpleFIN gives you after connecting your accounts at{" "}
+              <code>bridge.simplefin.org</code>. It is claimed once and stored in the system
+              keyring, never in plain text.
             </p>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 type="password"
                 className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
-                placeholder={hasSavedUrl ? "•••••••• (saved — paste to replace)" : "https://…@bridge.simplefin.org/simplefin"}
+                placeholder={hasSavedUrl ? "•••••••• (saved — paste a new token to replace)" : "Paste your SimpleFIN setup token"}
                 value={accessUrl}
                 onChange={(e) => setAccessUrl(e.target.value)}
               />
