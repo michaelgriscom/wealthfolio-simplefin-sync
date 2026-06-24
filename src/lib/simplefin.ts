@@ -54,6 +54,45 @@ export function parseAccessUrl(accessUrl: string): { baseUrl: string; authHeader
   return { baseUrl: base, authHeader: `Basic ${btoa(`${user}:${pass}`)}` };
 }
 
+/** True if the input is already an access URL (vs. a base64 setup token). */
+export function isAccessUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input.trim());
+}
+
+/**
+ * Exchange a one-time SimpleFIN setup token (base64 of a claim URL) for a
+ * long-lived access URL. The token is consumed on success.
+ */
+export async function claimToken(token: string): Promise<string> {
+  let claimUrl: string;
+  try {
+    claimUrl = atob(token.trim());
+  } catch {
+    throw new Error("That doesn't look like a valid SimpleFIN token (not base64).");
+  }
+  if (!/^https?:\/\//i.test(claimUrl)) {
+    throw new Error("Decoded token is not a claim URL.");
+  }
+  const res = await fetch(claimUrl, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `SimpleFIN claim failed (HTTP ${res.status}). The token may already have been used. ${body}`.trim(),
+    );
+  }
+  const accessUrl = (await res.text()).trim();
+  if (!isAccessUrl(accessUrl)) {
+    throw new Error("SimpleFIN claim did not return an access URL.");
+  }
+  return accessUrl;
+}
+
+/** Accept either a setup token or an access URL and return an access URL. */
+export async function resolveAccessUrl(input: string): Promise<string> {
+  const value = input.trim();
+  return isAccessUrl(value) ? value : claimToken(value);
+}
+
 /**
  * Fetch all accounts (with holdings) from the SimpleFIN Bridge.
  *

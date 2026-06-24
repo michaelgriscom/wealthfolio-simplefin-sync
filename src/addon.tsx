@@ -2,7 +2,7 @@ import { type AddonContext } from "@wealthfolio/addon-sdk";
 import { Button, Icons, Page, PageContent, PageHeader } from "@wealthfolio/ui";
 import React, { useEffect, useState } from "react";
 import { mapAccountToSnapshot } from "./lib/mapping";
-import { fetchAccounts, type SimpleFinAccount } from "./lib/simplefin";
+import { fetchAccounts, isAccessUrl, resolveAccessUrl, type SimpleFinAccount } from "./lib/simplefin";
 
 const SECRET_ACCESS_URL = "access_url";
 const SECRET_MAPPING = "account_mapping";
@@ -46,10 +46,13 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setBusy(true);
     setError(null);
     try {
-      await ctx.api.secrets.set(SECRET_ACCESS_URL, value);
+      // Accept either a paste of the access URL or the one-time setup token.
+      const wasToken = !isAccessUrl(value);
+      const accessUrl = await resolveAccessUrl(value);
+      await ctx.api.secrets.set(SECRET_ACCESS_URL, accessUrl);
       setHasSavedUrl(true);
       setAccessUrl("");
-      ctx.api.toast.success("SimpleFIN access URL saved");
+      ctx.api.toast.success(wasToken ? "Token claimed and saved" : "SimpleFIN access URL saved");
     } catch (e) {
       setError((e as Error).message);
     } finally {
