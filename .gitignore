@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+*.zip
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
+# pnpm local store (created when HOME is unset)
+.pnpm-store/

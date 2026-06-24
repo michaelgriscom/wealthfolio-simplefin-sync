@@ -1,0 +1,32 @@
+{
+  "id": "wealthfolio-simplefin-sync",
+  "name": "SimpleFIN Sync",
+  "version": "0.1.0",
+  "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots, for automatic asset-allocation tracking.",
+  "author": "Michael Griscom",
+  "main": "dist/addon.js",
+  "sdkVersion": "3.5.1",
+  "enabled": true,
+  "permissions": [
+    {
+      "category": "secrets",
+      "functions": ["set", "get", "delete"],
+      "purpose": "Securely store your SimpleFIN access URL and account mapping in the system keyring."
+    },
+    {
+      "category": "accounts",
+      "functions": ["getAll"],
+      "purpose": "List your Wealthfolio accounts so SimpleFIN accounts can be mapped to them."
+    },
+    {
+      "category": "snapshots",
+      "functions": ["save"],
+      "purpose": "Write current holdings and cash balances as dated snapshots to HOLDINGS-mode accounts."
+    },
+    {
+      "category": "ui",
+      "functions": ["sidebar.addItem", "router.add"],
+      "purpose": "Add a SimpleFIN Sync page to the sidebar."
+    }
+  ]
+}
