@@ -19,7 +19,8 @@ async function doSync(trigger: string): Promise<SyncResult> {
   running = true;
   log.info(`sync started (${trigger})`);
   try {
-    const result = await runSync(cfg, log);
+    // Reload config each run so mapping/access-URL edits take effect without a restart.
+    const result = await runSync(loadConfig(), log);
     lastResult = result;
     lastError = null;
     log.info(`sync finished: ${result.accountsSynced} synced, ${result.accountsFailed} failed`);
