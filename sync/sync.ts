@@ -49,8 +49,9 @@ export async function runSync(cfg: SyncConfig, log: Logger): Promise<SyncResult>
     if (sources.length === 0) continue;
 
     const merged = aggregateSnapshots(sources.map((a) => mapAccountToSnapshot(a, cfg.cashSymbols)));
+    const positions = merged.positions.map((p) => ({ ...p, exchangeMic: cfg.exchangeMic }));
     try {
-      await wf.saveSnapshot(wfAccountId, merged.positions, merged.cashBalances, date);
+      await wf.saveSnapshot(wfAccountId, positions, merged.cashBalances, date);
       result.accountsSynced += 1;
       log.info(
         `Snapshot saved for ${wfAccountId}: ${merged.positions.length} positions, ` +

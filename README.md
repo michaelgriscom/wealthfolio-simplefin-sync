@@ -68,6 +68,7 @@ summed per currency).
 | `SYNC_AT` | `04:00` | Daily run time (24h local) |
 | `RUN_ON_START` | `false` | Sync once on startup |
 | `CASH_SYMBOLS` | built-in list | Comma-separated tickers to treat as cash |
+| `EXCHANGE_MIC` | `XNAS` | Exchange for synced positions (also `exchangeMic` in the config file) |
 | `CONFIG_FILE` | `/config/config.json` | Path to the config file |
 | `PORT` | `8080` | Health/status/trigger HTTP port |
 

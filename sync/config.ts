@@ -11,11 +11,13 @@ export interface SyncConfig {
   syncAt: string;
   port: number;
   runOnStart: boolean;
+  exchangeMic: string;
 }
 
 interface FileConfig {
   simplefinAccessUrl?: string;
   mapping?: Record<string, string[]>;
+  exchangeMic?: string;
 }
 
 function required(key: string, value: string | undefined): string {
@@ -53,5 +55,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SyncConfig {
     syncAt: env.SYNC_AT ?? "04:00",
     port: Number(env.PORT ?? "8080"),
     runOnStart: (env.RUN_ON_START ?? "false").toLowerCase() === "true",
+    exchangeMic: file.exchangeMic ?? env.EXCHANGE_MIC ?? "XNAS",
   };
 }
