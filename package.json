@@ -1,6 +1,6 @@
 {
   "name": "wealthfolio-simplefin-sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots.",
   "type": "module",
   "private": true,
