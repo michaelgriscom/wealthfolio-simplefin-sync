@@ -25,8 +25,6 @@
     "clean": "rm -rf dist",
     "package": "mkdir -p dist && zip -r dist/$npm_package_name-$npm_package_version.zip manifest.json dist/ README.md",
     "bundle": "pnpm clean && pnpm build && pnpm package",
-    "sync": "tsx sync/main.ts",
-    "sync:once": "tsx sync/main.ts --once",
     "lint": "tsc --noEmit",
     "type-check": "tsc --noEmit"
   },
@@ -47,7 +45,6 @@
     "@wealthfolio/addon-dev-tools": "^3.5.1",
     "rollup-plugin-external-globals": "^0.13.0",
     "tailwindcss": "^4.1.18",
-    "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vite": "^7.3.2"
   },

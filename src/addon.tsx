@@ -1,6 +1,7 @@
 import { type AddonContext } from "@wealthfolio/addon-sdk";
 import { Button, Icons, Page, PageContent, PageHeader } from "@wealthfolio/ui";
 import React, { useEffect, useState } from "react";
+import { aggregateSnapshots } from "./lib/aggregate";
 import { mapAccountToSnapshot } from "./lib/mapping";
 import { fetchAccounts, isAccessUrl, resolveAccessUrl, type SimpleFinAccount } from "./lib/simplefin";
 
@@ -34,6 +35,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         setWfAccounts(
           accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency })),
         );
+        // If a token is already saved, load the SimpleFIN accounts so the
+        // existing mapping shows up prepopulated instead of a blank screen.
+        if (savedUrl) await loadAccounts(savedUrl, { silent: true });
       } catch (e) {
         ctx.api.logger.error("Failed to load saved state: " + (e as Error).message);
       }
@@ -60,28 +64,34 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     }
   }
 
-  async function refreshAccounts() {
+  async function loadAccounts(url: string, opts: { silent?: boolean } = {}) {
     setBusy(true);
     setError(null);
     try {
-      const url = await ctx.api.secrets.get(SECRET_ACCESS_URL);
-      if (!url) {
-        setError("Save your SimpleFIN access URL first.");
-        return;
-      }
       const response = await fetchAccounts(url);
       const investment = response.accounts.filter((a) => (a.holdings?.length ?? 0) > 0);
       setSfAccounts(investment);
       if (response.errors?.length) {
         ctx.api.toast.warning(`SimpleFIN reported: ${response.errors.join("; ")}`);
       }
-      ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
+      if (!opts.silent) {
+        ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
+      }
     } catch (e) {
       setError((e as Error).message);
       ctx.api.logger.error("Refresh failed: " + (e as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function refreshAccounts() {
+    const url = await ctx.api.secrets.get(SECRET_ACCESS_URL);
+    if (!url) {
+      setError("Save your SimpleFIN token first.");
+      return;
+    }
+    await loadAccounts(url);
   }
 
   async function updateMapping(simplefinAccountId: string, wealthfolioAccountId: string) {
@@ -103,20 +113,30 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     let synced = 0;
     let failed = 0;
     try {
+      // Group SimpleFIN accounts by their target Wealthfolio account so several
+      // mapped to the same account are aggregated into one snapshot (matching
+      // the sidecar) instead of overwriting each other.
+      const byWfAccount = new Map<string, SimpleFinAccount[]>();
       for (const account of sfAccounts) {
         const wfAccountId = mapping[account.id];
         if (!wfAccountId) continue;
-        const { positions, cashBalances } = mapAccountToSnapshot(account);
+        const group = byWfAccount.get(wfAccountId);
+        if (group) group.push(account);
+        else byWfAccount.set(wfAccountId, [account]);
+      }
+      for (const [wfAccountId, accounts] of byWfAccount) {
+        const merged = aggregateSnapshots(accounts.map((a) => mapAccountToSnapshot(a)));
         try {
-          await ctx.api.snapshots.save(wfAccountId, positions, cashBalances, date);
+          await ctx.api.snapshots.save(wfAccountId, merged.positions, merged.cashBalances, date);
           synced += 1;
           ctx.api.logger.info(
-            `Saved snapshot for "${account.name}" (${positions.length} positions) on ${date}`,
+            `Saved snapshot for ${accounts.length} account(s) → ${wfAccountId} ` +
+              `(${merged.positions.length} positions) on ${date}`,
           );
         } catch (e) {
           failed += 1;
           ctx.api.logger.error(
-            `Snapshot failed for "${account.name}": ${(e as Error).message}`,
+            `Snapshot failed for ${wfAccountId}: ${(e as Error).message}`,
           );
         }
       }
@@ -190,7 +210,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
             </div>
             {sfAccounts.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                No investment accounts loaded yet. Save your access URL, then click “Refresh from
+                No investment accounts loaded yet. Save your token, then click “Refresh from
                 SimpleFIN”.
               </p>
             ) : (
