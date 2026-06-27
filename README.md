@@ -33,56 +33,14 @@ cash.
 
 ### Scheduling note
 
-The addon syncs **on demand** while its page is open — it can't run unattended. It
-also maps SimpleFIN accounts **1:1**, so it can't merge several SimpleFIN accounts
-into one Wealthfolio account. For automatic, unattended sync (and many-to-one
-aggregation), use the **sync daemon** below.
+The addon syncs **on demand** while its page is open — it can't run unattended
+(addons are browser code and only run while the Wealthfolio app is open).
 
-## Automated sync daemon
-
-`sync/` contains a small Node daemon that runs the same SimpleFIN → snapshot logic
-unattended against Wealthfolio's server REST API. It reuses `src/lib/{simplefin,mapping}.ts`
-(which have no runtime third-party imports), so the container only needs `tsx`.
-
-**Config file** (`/config/config.json`, mounted; keep it out of version control):
-
-```json
-{
-  "simplefinAccessUrl": "https://user:pass@bridge.simplefin.org/simplefin",
-  "mapping": {
-    "<wealthfolio-account-id>": ["<simplefin-account-id>", "..."]
-  }
-}
-```
-
-Each Wealthfolio account maps to one or more SimpleFIN accounts; multiple sources are
-**aggregated** (duplicate tickers summed with quantity-weighted average cost, cash
-summed per currency).
-
-**Environment:**
-
-| Var | Default | Purpose |
-| --- | --- | --- |
-| `WF_BASE_URL` | `http://wealthfolio:8088` | Wealthfolio server API base |
-| `WF_PASSWORD` | — (required) | Wealthfolio login password |
-| `SYNC_AT` | `04:00` | Daily run time (24h local) |
-| `RUN_ON_START` | `false` | Sync once on startup |
-| `CASH_SYMBOLS` | built-in list | Comma-separated tickers to treat as cash |
-| `EXCHANGE_MIC` | `XNAS` | Exchange for synced positions (also `exchangeMic` in the config file) |
-| `CONFIG_FILE` | `/config/config.json` | Path to the config file |
-| `PORT` | `8080` | Health/status/trigger HTTP port |
-
-**Run:**
-
-```bash
-docker build -t wealthfolio-simplefin-sync:local .
-# scheduled daemon:
-docker run -v ./config.json:/config/config.json:ro -e WF_PASSWORD=… wealthfolio-simplefin-sync:local
-# one-shot (exits non-zero on any failure):
-docker run … wealthfolio-simplefin-sync:local tsx sync/main.ts --once
-```
-
-HTTP endpoints: `GET /` (health), `GET /status` (last run), `POST /sync` (trigger now).
+For automatic, hands-off daily sync, use the standalone companion sidecar:
+**[wealthfolio-simplefin-sidecar](https://github.com/michaelgriscom/wealthfolio-simplefin-sidecar)**.
+It runs the same SimpleFIN → snapshot logic as its own container against
+Wealthfolio's REST API, configured by a JSON file. Pick whichever fits: this addon
+for a point-and-click GUI, the sidecar for unattended automation.
 
 ## Install
 

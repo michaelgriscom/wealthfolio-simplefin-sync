@@ -1,5 +1,5 @@
 import type { SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
-import type { MappedSnapshot } from "../src/lib/mapping";
+import type { MappedSnapshot } from "./mapping";
 
 function round(n: number, dp: number): number {
   const f = 10 ** dp;
