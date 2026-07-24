@@ -55,17 +55,9 @@ This affects the desktop app only. In self-hosted server mode secrets go to
 
 ### Network access prompt
 
-On install — and again after each update — Wealthfolio asks you to approve the
-hosts declared in `network.allowedHosts`. Approve `bridge.simplefin.org` and
+On install, and again after each update, you must approve network access to `bridge.simplefin.org` and
 `beta-bridge.simplefin.org`, or every request fails with
-`Addon network host '…' is not approved`.
-
-### Self-hosted SimpleFIN bridges
-
-The 3.6 sandbox only permits outbound requests to hosts declared in
-`manifest.json`, so this addon can reach `bridge.simplefin.org` and
-`beta-bridge.simplefin.org` only. A bridge on any other domain is rejected with a
-clear error rather than failing opaquely.
+`Addon network host '…' is not approved`. To allow the sites, first navigate to Settings → Addons → hover over the SimpleFIN Sync card → click the eye icon, then check the boxes at the bottom of the pop-up
 
 ## Install
 
