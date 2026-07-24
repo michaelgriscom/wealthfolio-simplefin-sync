@@ -18,17 +18,35 @@ Wealthfolio's REST API, configured by a JSON file.
 
 ## Requirements
 
-- Wealthfolio **3.5+** (desktop or self-hosted server mode).
+- Wealthfolio **3.6.1+** (desktop or self-hosted server mode).
 - A SimpleFIN Bridge **setup token** (from *Connect your bank* at `bridge.simplefin.org`).
 
 ## Usage
 
 1. Install the addon (see **Install** below) and open **SimpleFIN Sync** from the sidebar.
 2. **Step 1** — paste your SimpleFIN setup token and click *Save*. It is claimed once and the
-   resulting access stored in the system keyring via the addon's private secrets store.
+   resulting credential stored in the system keyring via the addon's private secrets store.
 3. **Step 2** — click *Refresh from SimpleFIN* to list brokerage accounts that report
    holdings, then map each one to a HOLDINGS-mode Wealthfolio account.
 4. **Step 3** — click *Sync now* to write today's snapshot for every mapped account.
+
+## Troubleshooting
+
+### "System keyring unavailable"
+
+Wealthfolio stores addon secrets in your OS keyring. On Linux that requires a
+D-Bus Secret Service provider; without one you'll see
+`org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable` in the
+logs and the addon can't save your SimpleFIN credential. Install and start one of
+gnome-keyring, KWallet, or KeePassXC (with Secret Service integration enabled),
+then reopen Wealthfolio.
+
+This affects the desktop app only.
+
+### Network access prompt
+
+On install, and again after each update, you must approve network access to `bridge.simplefin.org` and
+`beta-bridge.simplefin.org`. To allow the sites, first navigate to Settings → Addons → hover over the SimpleFIN Sync card → click the eye icon, then check the boxes at the bottom of the pop-up
 
 ## Install
 

@@ -29,8 +29,8 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@wealthfolio/addon-sdk": "^3.5.1",
-    "@wealthfolio/ui": "^3.5.1"
+    "@wealthfolio/addon-sdk": "^3.6.2",
+    "@wealthfolio/ui": "^3.6.2"
   },
   "peerDependencies": {
     "react": "^19.2.4",
@@ -42,8 +42,7 @@
     "@types/react": "^19.2.13",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "@wealthfolio/addon-dev-tools": "^3.5.1",
-    "rollup-plugin-external-globals": "^0.13.0",
+    "@wealthfolio/addon-dev-tools": "^3.6.2",
     "tailwindcss": "^4.1.18",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
