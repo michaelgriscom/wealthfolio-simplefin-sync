@@ -44,10 +44,21 @@ gnome-keyring, KWallet, or KeePassXC (with Secret Service integration enabled),
 then reopen Wealthfolio.
 
 Your account mapping is unaffected — it lives in Wealthfolio's own database, not
-the keyring. If you'd rather not run a keyring at all, the addon offers an
-explicit opt-in to store the SimpleFIN credential in that database instead. It is
-kept **in plain text** and replicated to your paired devices, so only take that
-option if you accept the trade-off.
+the keyring, so mapping keeps working. The credential itself has no fallback:
+Wealthfolio's network broker only authenticates a request by reading the secret
+it was told to use, and it rejects both an addon-supplied `Authorization` header
+and credentials embedded in the URL. A working secret store is therefore required
+to reach SimpleFIN at all.
+
+This affects the desktop app only. In self-hosted server mode secrets go to
+`WF_SECRET_FILE` (encrypted with `WF_SECRET_KEY`), so no OS keyring is involved.
+
+### Network access prompt
+
+On install — and again after each update — Wealthfolio asks you to approve the
+hosts declared in `network.allowedHosts`. Approve `bridge.simplefin.org` and
+`beta-bridge.simplefin.org`, or every request fails with
+`Addon network host '…' is not approved`.
 
 ### Self-hosted SimpleFIN bridges
 
