@@ -75,6 +75,25 @@ export class DisallowedHostError extends Error {
   }
 }
 
+/**
+ * Turn a brokered-request failure into something the user can act on.
+ *
+ * The host refuses requests to hosts the user hasn't approved, and the approval
+ * lives in the addon's permissions dialog rather than anywhere near the error.
+ * Left unexplained, "not approved" is a dead end.
+ */
+export function explainRequestError(error: unknown): string {
+  const message = (error as Error)?.message ?? String(error);
+  if (/not approved/i.test(message)) {
+    return (
+      "Wealthfolio hasn't approved network access to the SimpleFIN Bridge yet. " +
+      "Open Settings → Addons, open the SimpleFIN Sync permissions, then approve " +
+      "the bridge host under “Network hosts” and save."
+    );
+  }
+  return message;
+}
+
 /** Reject any URL the host broker would refuse, so the error is actionable. */
 function assertAllowedHost(url: string): URL {
   const parsed = new URL(url);

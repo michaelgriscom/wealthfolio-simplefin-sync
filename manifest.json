@@ -44,7 +44,7 @@
     },
     {
       "category": "ui",
-      "functions": ["sidebar.addItem", "router.add"],
+      "functions": ["sidebar.addItem", "router.add", "onDisable"],
       "purpose": "Add a SimpleFIN Sync page to the sidebar."
     }
   ]

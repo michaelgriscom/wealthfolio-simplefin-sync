@@ -5,6 +5,7 @@ import { aggregateSnapshots } from "./lib/aggregate";
 import { mapAccountToSnapshot } from "./lib/mapping";
 import {
   fetchAccounts,
+  explainRequestError,
   isAccessUrl,
   resolveAccessUrl,
   splitAccessUrl,
@@ -220,7 +221,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       ctx.api.toast.success(wasToken ? "Token claimed and saved" : "SimpleFIN access URL saved");
       await loadAccounts(split.baseUrl);
     } catch (e) {
-      setError((e as Error).message);
+      setError(explainRequestError(e));
       ctx.api.logger.error("Save failed: " + (e as Error).message);
     } finally {
       setBusy(false);
@@ -241,7 +242,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
       }
     } catch (e) {
-      setError((e as Error).message);
+      setError(explainRequestError(e));
       ctx.api.logger.error("Refresh failed: " + (e as Error).message);
     } finally {
       setBusy(false);
