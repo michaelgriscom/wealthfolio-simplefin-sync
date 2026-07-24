@@ -56,7 +56,13 @@ async function trySecret<T>(op: () => Promise<T>): Promise<{ ok: true; value: T 
 function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   const [accessUrl, setAccessUrl] = useState("");
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
-  const [hasCredentials, setHasCredentials] = useState(false);
+  /**
+   * True only when *both* halves of the credential are present: the stored base
+   * URL and the secret the broker resolves. They are written together, but a
+   * partial write (or state seeded out-of-band) would otherwise let the field
+   * claim "saved" while every request fails for want of the other half.
+   */
+  const [isConfigured, setIsConfigured] = useState(false);
   const [keyring, setKeyring] = useState<KeyringState>("probing");
   /**
    * A claimed-but-not-yet-persisted credential. A SimpleFIN setup token is
@@ -113,7 +119,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       }
 
       setBaseUrl(storedBaseUrl);
-      setHasCredentials(Boolean(credentials));
+      setIsConfigured(Boolean(storedBaseUrl && credentials));
 
       // If credentials are already saved, load the SimpleFIN accounts so the
       // existing mapping shows up prepopulated instead of a blank screen.
@@ -208,7 +214,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       await ctx.api.storage.set(STORAGE_BASE_URL, split.baseUrl);
       await persistCredentials(split.credentials);
       setBaseUrl(split.baseUrl);
-      setHasCredentials(true);
+      setIsConfigured(true);
       setAccessUrl("");
       setPending(null);
       ctx.api.toast.success(wasToken ? "Token claimed and saved" : "SimpleFIN access URL saved");
@@ -244,8 +250,18 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
 
   async function refreshAccounts() {
     const url = baseUrl ?? (await ctx.api.storage.get(STORAGE_BASE_URL).catch(() => null));
-    if (!url || !(await hasStoredCredentials())) {
-      setError(keyring === "unavailable" ? KEYRING_HELP : "Save your SimpleFIN token first.");
+    const haveSecret = await hasStoredCredentials();
+    if (!url || !haveSecret) {
+      // Name the half that's missing. Reporting "save your token first" when a
+      // token *is* stored sends people hunting in the wrong place.
+      if (keyring === "unavailable") setError(KEYRING_HELP);
+      else if (haveSecret && !url) {
+        setError(
+          "Your SimpleFIN credential is saved but the Bridge URL is missing, so the " +
+            "setup is incomplete. Paste your access URL (or a new setup token) above and " +
+            "click Save to repair it.",
+        );
+      } else setError("Save your SimpleFIN token first.");
       return;
     }
     await loadAccounts(url);
@@ -362,7 +378,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
               <input
                 type="password"
                 className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
-                placeholder={hasCredentials ? "•••••••• (saved — paste a new token to replace)" : "Paste your SimpleFIN setup token or access URL"}
+                placeholder={isConfigured ? "•••••••• (saved — paste a new token to replace)" : "Paste your SimpleFIN setup token or access URL"}
                 value={accessUrl}
                 onChange={(e) => setAccessUrl(e.target.value)}
               />
