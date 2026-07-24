@@ -18,9 +18,7 @@ Wealthfolio's REST API, configured by a JSON file.
 
 ## Requirements
 
-- Wealthfolio **3.6.1+** (desktop or self-hosted server mode). Wealthfolio 3.6 runs
-  addons in a sandboxed iframe; this addon targets that sandbox and will not load
-  on 3.5.x. If you are still on 3.5, use the **1.0.0** release.
+- Wealthfolio **3.6.1+** (desktop or self-hosted server mode).
 - A SimpleFIN Bridge **setup token** (from *Connect your bank* at `bridge.simplefin.org`).
 
 ## Usage
@@ -43,21 +41,12 @@ logs and the addon can't save your SimpleFIN credential. Install and start one o
 gnome-keyring, KWallet, or KeePassXC (with Secret Service integration enabled),
 then reopen Wealthfolio.
 
-Your account mapping is unaffected — it lives in Wealthfolio's own database, not
-the keyring, so mapping keeps working. The credential itself has no fallback:
-Wealthfolio's network broker only authenticates a request by reading the secret
-it was told to use, and it rejects both an addon-supplied `Authorization` header
-and credentials embedded in the URL. A working secret store is therefore required
-to reach SimpleFIN at all.
-
-This affects the desktop app only. In self-hosted server mode secrets go to
-`WF_SECRET_FILE` (encrypted with `WF_SECRET_KEY`), so no OS keyring is involved.
+This affects the desktop app only.
 
 ### Network access prompt
 
 On install, and again after each update, you must approve network access to `bridge.simplefin.org` and
-`beta-bridge.simplefin.org`, or every request fails with
-`Addon network host '…' is not approved`. To allow the sites, first navigate to Settings → Addons → hover over the SimpleFIN Sync card → click the eye icon, then check the boxes at the bottom of the pop-up
+`beta-bridge.simplefin.org`. To allow the sites, first navigate to Settings → Addons → hover over the SimpleFIN Sync card → click the eye icon, then check the boxes at the bottom of the pop-up
 
 ## Install
 
