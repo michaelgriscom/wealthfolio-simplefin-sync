@@ -8,13 +8,17 @@ import {
   isAccessUrl,
   resolveAccessUrl,
   splitAccessUrl,
-  type BridgeAuth,
   type NetworkRequestFn,
   type SimpleFinAccount,
   type SplitAccessUrl,
 } from "./lib/simplefin";
 
-/** Keyring key holding base64 `user:pass` for the Bridge (preferred). */
+/**
+ * Secret store key holding base64 `user:pass` for the Bridge. The host's network
+ * broker reads it by name, so this must be the only home for the credential —
+ * the broker refuses an addon-supplied `Authorization` header and refuses
+ * credentials in the URL, leaving no alternative if the store is unavailable.
+ */
 const SECRET_CREDENTIALS = "bridge_credentials";
 /** Pre-3.6 keyring keys, migrated on first load and then deleted. */
 const LEGACY_SECRET_ACCESS_URL = "access_url";
@@ -22,16 +26,14 @@ const LEGACY_SECRET_MAPPING = "account_mapping";
 /** Durable storage keys. Storage is SQLite-backed and needs no system keyring. */
 const STORAGE_BASE_URL = "bridge_base_url";
 const STORAGE_MAPPING = "account_mapping";
-/** Opt-in fallback for hosts with no working keyring. Plain text — see the UI warning. */
-const STORAGE_CREDENTIALS_FALLBACK = "bridge_credentials_insecure";
 
 const ROUTE = "/addon/simplefin-sync";
 
 const KEYRING_HELP =
   "Wealthfolio can't reach a system keyring on this machine, so the SimpleFIN " +
-  "credential can't be stored securely. On Linux this usually means no Secret " +
-  "Service provider is running — install and start gnome-keyring, KWallet, or " +
-  "KeePassXC with Secret Service integration enabled, then reopen Wealthfolio.";
+  "credential can't be stored. On Linux this usually means no Secret Service " +
+  "provider is running — install and start gnome-keyring, KWallet, or KeePassXC " +
+  "with Secret Service integration enabled, then reopen Wealthfolio.";
 
 interface WfAccount {
   id: string;
@@ -56,14 +58,11 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [hasCredentials, setHasCredentials] = useState(false);
   const [keyring, setKeyring] = useState<KeyringState>("probing");
-  /** True once the credential is being kept in durable storage instead of the keyring. */
-  const [usingFallback, setUsingFallback] = useState(false);
-  const [allowFallback, setAllowFallback] = useState(false);
   /**
    * A claimed-but-not-yet-persisted credential. A SimpleFIN setup token is
-   * consumed by the claim call, so if persisting fails afterwards the token is
-   * already spent and re-pasting it won't work. Holding the result here lets the
-   * user retry the save (e.g. after allowing the storage fallback) without
+   * consumed by the claim call, so if the secret store rejects the write
+   * afterwards the token is already spent and re-pasting it won't work. Holding
+   * the result here lets the user fix their keyring and retry the save without
    * losing access.
    */
   const [pending, setPending] = useState<SplitAccessUrl | null>(null);
@@ -111,11 +110,6 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       } else {
         setKeyring("unavailable");
         ctx.api.logger.error("Secret store unavailable: " + probe.error.message);
-        credentials = await ctx.api.storage.get(STORAGE_CREDENTIALS_FALLBACK).catch(() => null);
-        if (credentials) {
-          setUsingFallback(true);
-          setAllowFallback(true);
-        }
       }
 
       setBaseUrl(storedBaseUrl);
@@ -124,11 +118,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       // If credentials are already saved, load the SimpleFIN accounts so the
       // existing mapping shows up prepopulated instead of a blank screen.
       if (storedBaseUrl && credentials) {
-        await loadAccounts(
-          storedBaseUrl,
-          probe.ok ? { mode: "keyring", secretKey: SECRET_CREDENTIALS } : { mode: "inline", credentials },
-          { silent: true },
-        );
+        await loadAccounts(storedBaseUrl, { silent: true });
       }
     })();
 
@@ -170,37 +160,26 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     }
   }, [ctx]);
 
-  /** Persist the Bridge credential, preferring the keyring over durable storage. */
-  async function persistCredentials(credentials: string): Promise<BridgeAuth> {
+  /**
+   * Persist the Bridge credential into the addon's secret store — the only place
+   * the network broker will read it from. Throws with remediation text when the
+   * store is unavailable, since there is no alternative location that would work.
+   */
+  async function persistCredentials(credentials: string): Promise<void> {
     const stored = await trySecret(() => ctx.api.secrets.set(SECRET_CREDENTIALS, credentials));
     if (stored.ok) {
       setKeyring("ok");
-      setUsingFallback(false);
-      await ctx.api.storage.delete(STORAGE_CREDENTIALS_FALLBACK).catch(() => undefined);
-      return { mode: "keyring", secretKey: SECRET_CREDENTIALS };
+      return;
     }
-
     setKeyring("unavailable");
     ctx.api.logger.error("Secret store write failed: " + stored.error.message);
-    if (!allowFallback) {
-      throw new Error(
-        `${KEYRING_HELP} You can also tick the box below to store it in Wealthfolio's ` +
-          `own database instead — convenient, but the credential is kept in plain text.`,
-      );
-    }
-    await ctx.api.storage.set(STORAGE_CREDENTIALS_FALLBACK, credentials);
-    setUsingFallback(true);
-    return { mode: "inline", credentials };
+    throw new Error(KEYRING_HELP);
   }
 
-  /** Read back whichever credential path is currently in use. */
-  async function currentAuth(): Promise<BridgeAuth | null> {
-    const fromKeyring = await trySecret(() => ctx.api.secrets.get(SECRET_CREDENTIALS));
-    if (fromKeyring.ok && fromKeyring.value) {
-      return { mode: "keyring", secretKey: SECRET_CREDENTIALS };
-    }
-    const fallback = await ctx.api.storage.get(STORAGE_CREDENTIALS_FALLBACK).catch(() => null);
-    return fallback ? { mode: "inline", credentials: fallback } : null;
+  /** True when a credential is present and readable for the broker to resolve. */
+  async function hasStoredCredentials(): Promise<boolean> {
+    const stored = await trySecret(() => ctx.api.secrets.get(SECRET_CREDENTIALS));
+    return stored.ok && Boolean(stored.value);
   }
 
   async function saveAccessUrl() {
@@ -209,11 +188,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
 
     // Claiming a setup token consumes it, so refuse before spending it when we
     // already know the credential has nowhere to go.
-    if (keyring === "unavailable" && !allowFallback) {
-      setError(
-        `${KEYRING_HELP} Alternatively, tick the box below to store the credential in ` +
-          `Wealthfolio's own database instead — convenient, but it is kept in plain text.`,
-      );
+    if (keyring === "unavailable") {
+      setError(KEYRING_HELP);
       return;
     }
 
@@ -230,13 +206,13 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         split = pending!;
       }
       await ctx.api.storage.set(STORAGE_BASE_URL, split.baseUrl);
-      const auth = await persistCredentials(split.credentials);
+      await persistCredentials(split.credentials);
       setBaseUrl(split.baseUrl);
       setHasCredentials(true);
       setAccessUrl("");
       setPending(null);
       ctx.api.toast.success(wasToken ? "Token claimed and saved" : "SimpleFIN access URL saved");
-      await loadAccounts(split.baseUrl, auth);
+      await loadAccounts(split.baseUrl);
     } catch (e) {
       setError((e as Error).message);
       ctx.api.logger.error("Save failed: " + (e as Error).message);
@@ -245,11 +221,11 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     }
   }
 
-  async function loadAccounts(url: string, auth: BridgeAuth, opts: { silent?: boolean } = {}) {
+  async function loadAccounts(url: string, opts: { silent?: boolean } = {}) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetchAccounts(url, auth, request);
+      const response = await fetchAccounts(url, SECRET_CREDENTIALS, request);
       const investment = response.accounts.filter((a) => (a.holdings?.length ?? 0) > 0);
       setSfAccounts(investment);
       if (response.errors?.length) {
@@ -268,12 +244,11 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
 
   async function refreshAccounts() {
     const url = baseUrl ?? (await ctx.api.storage.get(STORAGE_BASE_URL).catch(() => null));
-    const auth = await currentAuth();
-    if (!url || !auth) {
-      setError("Save your SimpleFIN token first.");
+    if (!url || !(await hasStoredCredentials())) {
+      setError(keyring === "unavailable" ? KEYRING_HELP : "Save your SimpleFIN token first.");
       return;
     }
-    await loadAccounts(url, auth);
+    await loadAccounts(url);
   }
 
   async function updateMapping(simplefinAccountId: string, wealthfolioAccountId: string) {
@@ -367,6 +342,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
               <p className="font-medium">System keyring unavailable</p>
               <p className="mt-1">{KEYRING_HELP}</p>
               <p className="mt-2">
+                Wealthfolio's network broker only accepts a credential it can read from the
+                secret store, so there is no alternative location the addon could use instead.
                 Your account mapping is unaffected — it is kept in Wealthfolio's own database.
               </p>
             </div>
@@ -396,28 +373,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
             {pending ? (
               <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
                 Your token was claimed successfully but couldn’t be stored. It has already been
-                consumed, so don’t paste it again — resolve the storage problem above and click
+                consumed, so don’t paste it again — fix the keyring problem above, then click
                 “Retry save”.
-              </p>
-            ) : null}
-            {keyring === "unavailable" ? (
-              <label className="mt-3 flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={allowFallback}
-                  onChange={(e) => setAllowFallback(e.target.checked)}
-                />
-                <span>
-                  Store the SimpleFIN credential in Wealthfolio's database instead of the keyring.
-                  It will be saved <strong>in plain text</strong> and replicated to your paired
-                  devices. Only tick this if you accept that trade-off.
-                </span>
-              </label>
-            ) : null}
-            {usingFallback ? (
-              <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-                Currently storing the credential outside the keyring, in plain text.
               </p>
             ) : null}
           </section>

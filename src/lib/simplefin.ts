@@ -147,32 +147,21 @@ export async function resolveAccessUrl(
 }
 
 /**
- * How the Bridge credential reaches the broker.
- *
- * `keyring` is the default and preferred path: the broker resolves the secret
- * itself, so the credential never enters addon code. `inline` is the fallback
- * for hosts with no working system keyring (see `secretsAvailable` in addon.tsx)
- * and passes the credential explicitly.
- */
-export type BridgeAuth =
-  | { mode: "keyring"; secretKey: string }
-  | { mode: "inline"; credentials: string };
-
-function authFor(auth: BridgeAuth): Pick<NetworkRequest, "auth" | "headers"> {
-  return auth.mode === "keyring"
-    ? { auth: { type: "basic", secretKey: auth.secretKey } }
-    : { headers: { Authorization: `Basic ${auth.credentials}` } };
-}
-
-/**
  * Fetch all accounts (with holdings) from the SimpleFIN Bridge.
+ *
+ * The credential is named, never passed: the host broker resolves `secretKey`
+ * out of the addon's own secret store and injects the `Authorization` header
+ * itself, so the credential never enters addon code. This is the *only* way an
+ * addon can authenticate — the broker rejects an addon-supplied `Authorization`
+ * header ("must use request.auth.secretKey") and rejects credentials embedded in
+ * the URL, so there is no path around a secret store that isn't working.
  *
  * `start-date` is pinned to "now" so the response carries current holdings
  * without dragging in the full transaction history.
  */
 export async function fetchAccounts(
   baseUrl: string,
-  auth: BridgeAuth,
+  secretKey: string,
   request: NetworkRequestFn,
 ): Promise<SimpleFinResponse> {
   assertAllowedHost(baseUrl);
@@ -180,7 +169,7 @@ export async function fetchAccounts(
   const res = await request({
     url: `${baseUrl}/accounts?start-date=${startDate}`,
     method: "GET",
-    ...authFor(auth),
+    auth: { type: "basic", secretKey },
   });
   assertOk(res, "SimpleFIN request failed");
   try {
