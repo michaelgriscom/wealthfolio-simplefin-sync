@@ -5,13 +5,27 @@
   "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots, for automatic asset-allocation tracking.",
   "author": "Michael Griscom",
   "main": "dist/addon.js",
-  "sdkVersion": "3.5.1",
+  "sdkVersion": "3.6.2",
+  "minWealthfolioVersion": "3.6.1",
   "enabled": true,
+  "network": {
+    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"]
+  },
+  "hostDependencies": {
+    "@tanstack/react-query": "^5.90.0",
+    "@wealthfolio/addon-sdk": "^3.6.0",
+    "@wealthfolio/ui": "^3.6.0",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.7.0"
+  },
   "permissions": [
     {
       "category": "secrets",
-      "functions": ["set", "get", "delete"],
-      "purpose": "Securely store your SimpleFIN access URL and account mapping in the system keyring."
+      "functions": ["set", "get", "use", "delete"],
+      "purpose": "Securely store your SimpleFIN Bridge credential in the system keyring, and let Wealthfolio's network broker use it to authenticate to the Bridge."
     },
     {
       "category": "accounts",
@@ -22,6 +36,11 @@
       "category": "snapshots",
       "functions": ["save"],
       "purpose": "Write current holdings and cash balances as dated snapshots to HOLDINGS-mode accounts."
+    },
+    {
+      "category": "network",
+      "functions": ["request"],
+      "purpose": "Fetch your holdings from the SimpleFIN Bridge through Wealthfolio's network broker."
     },
     {
       "category": "ui",
