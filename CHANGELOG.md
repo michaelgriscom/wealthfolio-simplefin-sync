@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/compare/v1.0.0...v1.0.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* migrate to the Wealthfolio 3.6 addon sandbox ([#12](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/issues/12)) ([6c02b3a](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/commit/6c02b3a516ead7e765b45ca777a8cb3a1a84894e))
+
 ## 1.0.0 (2026-06-27)
 
 
