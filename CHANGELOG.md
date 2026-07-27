@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/compare/v1.0.1...v1.0.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* report correct addon version number in Wealthfolio UI ([#14](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/issues/14)) ([0eb593b](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/commit/0eb593b654cb4428e7338d5c5242a9b17b1a481e))
+
 ## [1.0.1](https://github.com/michaelgriscom/wealthfolio-simplefin-sync/compare/v1.0.0...v1.0.1) (2026-07-24)
 
 
