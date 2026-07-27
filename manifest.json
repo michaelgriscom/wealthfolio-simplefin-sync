@@ -1,7 +1,7 @@
 {
   "id": "wealthfolio-simplefin-sync",
   "name": "SimpleFIN Sync",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots, for automatic asset-allocation tracking.",
   "author": "Michael Griscom",
   "main": "dist/addon.js",
@@ -9,7 +9,10 @@
   "minWealthfolioVersion": "3.6.1",
   "enabled": true,
   "network": {
-    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"]
+    "allowedHosts": [
+      "bridge.simplefin.org",
+      "beta-bridge.simplefin.org"
+    ]
   },
   "hostDependencies": {
     "@tanstack/react-query": "^5.90.0",
@@ -24,27 +27,42 @@
   "permissions": [
     {
       "category": "secrets",
-      "functions": ["set", "get", "use", "delete"],
+      "functions": [
+        "set",
+        "get",
+        "use",
+        "delete"
+      ],
       "purpose": "Securely store your SimpleFIN Bridge credential in the system keyring, and let Wealthfolio's network broker use it to authenticate to the Bridge."
     },
     {
       "category": "accounts",
-      "functions": ["getAll"],
+      "functions": [
+        "getAll"
+      ],
       "purpose": "List your Wealthfolio accounts so SimpleFIN accounts can be mapped to them."
     },
     {
       "category": "snapshots",
-      "functions": ["save"],
+      "functions": [
+        "save"
+      ],
       "purpose": "Write current holdings and cash balances as dated snapshots to HOLDINGS-mode accounts."
     },
     {
       "category": "network",
-      "functions": ["request"],
+      "functions": [
+        "request"
+      ],
       "purpose": "Fetch your holdings from the SimpleFIN Bridge through Wealthfolio's network broker."
     },
     {
       "category": "ui",
-      "functions": ["sidebar.addItem", "router.add", "onDisable"],
+      "functions": [
+        "sidebar.addItem",
+        "router.add",
+        "onDisable"
+      ],
       "purpose": "Add a SimpleFIN Sync page to the sidebar."
     }
   ]
