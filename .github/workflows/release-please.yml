@@ -19,7 +19,6 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # Not using node release-type due to Wealthfolio's addon versioning pattern
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
