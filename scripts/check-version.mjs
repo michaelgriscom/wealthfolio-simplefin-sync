@@ -1,6 +1,4 @@
-// Guards against the version drift reported in issue #13: the addon manifest
-// is what Wealthfolio shows in its UI, so if it falls behind package.json the
-// published release reports the wrong version with no other visible symptom.
+// Guards against versioning inconsistencies in addon
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
