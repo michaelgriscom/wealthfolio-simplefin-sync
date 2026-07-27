@@ -26,7 +26,8 @@
     "package": "mkdir -p dist && zip -r dist/$npm_package_name-$npm_package_version.zip manifest.json dist/ README.md",
     "bundle": "pnpm clean && pnpm build && pnpm package",
     "lint": "tsc --noEmit",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "check-version": "node scripts/check-version.mjs"
   },
   "dependencies": {
     "@wealthfolio/addon-sdk": "^3.6.2",

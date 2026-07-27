@@ -28,5 +28,10 @@ jobs:
       - name: Type-check
         run: pnpm type-check
 
+      # manifest.json is the version Wealthfolio displays; catch drift from
+      # package.json here rather than in a shipped release.
+      - name: Check version consistency
+        run: pnpm check-version
+
       - name: Build addon bundle
         run: pnpm bundle

@@ -19,7 +19,12 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          release-type: node
+          # Do NOT set `release-type` here. Passing it makes the action build a
+          # config in memory and ignore release-please-config.json entirely,
+          # which silently dropped the `extra-files` manifest.json bump and the
+          # custom changelog sections. The release type lives in the config file.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   bundle:
     needs: release-please
