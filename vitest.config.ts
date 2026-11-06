@@ -7,7 +7,9 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.{ts,tsx}"],
     environment: "node",
-    restoreMocks: true,
+    // Snapshot dates come from the wall clock, so pin the zone: results must
+    // not depend on where the suite runs. Tests that need another zone stub it.
+    env: { TZ: "UTC" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],

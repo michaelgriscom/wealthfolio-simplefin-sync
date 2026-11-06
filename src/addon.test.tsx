@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { AddonContext, NetworkRequest, NetworkResponse } from "@wealthfolio/addon-sdk";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { ComponentType, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ComponentType, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import enable from "./addon";
 import type { SimpleFinAccount } from "./lib/simplefin";
@@ -15,8 +15,12 @@ vi.mock("@wealthfolio/ui", async () => {
     Page: passthrough,
     PageHeader: passthrough,
     PageContent: passthrough,
-    Button: ({ children, onClick, disabled }: Record<string, never>) =>
-      createElement("button", { onClick, disabled }, children),
+    // `variant` is a styling prop of the real Button; keep it off the DOM node.
+    Button: ({
+      variant: _variant,
+      ...props
+    }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string }) =>
+      createElement("button", props),
     Icons: { Loader: () => null },
   };
 });
@@ -77,8 +81,12 @@ function makeHost(opts: HostOptions = {}) {
     if (state.keyringDown) throw new Error("org.freedesktop.secrets was not provided");
   };
 
+  let claimed = false;
   const bridge = vi.fn(async (req: NetworkRequest): Promise<NetworkResponse> => {
     if (req.method === "POST" && req.url === CLAIM_URL) {
+      // setup tokens are single-use, as on the real Bridge
+      if (claimed) return { status: 403, headers: {}, body: "Token already claimed" };
+      claimed = true;
       return { status: 200, headers: {}, body: ACCESS_URL };
     }
     if (req.method === "GET" && req.url.startsWith(`${BASE_URL}/accounts?`)) {
@@ -182,6 +190,7 @@ const mapTo = (sfName: string, wfId: string) => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe("addon registration", () => {
@@ -391,6 +400,24 @@ describe("refresh", () => {
     expect(host.bridge).not.toHaveBeenCalled();
   });
 
+  it("reloads accounts on demand and reports how many have holdings", async () => {
+    const host = makeHost(configured());
+    host.mount();
+    await screen.findByText("Vanguard Brokerage");
+    expect(host.api.toast.success).not.toHaveBeenCalled(); // initial load is silent
+
+    host.bridge.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /refresh from simplefin/i }));
+
+    await waitFor(() =>
+      expect(host.api.toast.success).toHaveBeenCalledWith(
+        "Found 3 investment account(s) with holdings",
+      ),
+    );
+    expect(accountRequests(host)).toHaveLength(1);
+    expect(accountRequests(host)[0][0].auth).toEqual({ type: "basic", secretKey: "bridge_credentials" });
+  });
+
   it("asks for a token when nothing is saved", async () => {
     const host = makeHost();
     host.mount();
@@ -428,6 +455,21 @@ describe("account mapping", () => {
     );
     // not a secret: must not touch the keyring
     expect(host.api.secrets.set).not.toHaveBeenCalled();
+  });
+
+  it("reports a mapping that couldn't be persisted", async () => {
+    const host = makeHost(configured());
+    host.mount();
+    await screen.findByText("Vanguard Brokerage");
+    host.api.storage.set.mockRejectedValueOnce(new Error("database is locked"));
+
+    mapTo("Vanguard Brokerage", "wf-taxable");
+
+    await screen.findByText("Couldn't save the account mapping: database is locked");
+    // the selection still shows, so the user can see what didn't stick
+    const row = screen.getByText("Vanguard Brokerage").closest("li")!;
+    expect(within(row).getByRole("combobox")).toHaveProperty("value", "wf-taxable");
+    expect(host.storage.has("account_mapping")).toBe(false);
   });
 });
 
@@ -520,22 +562,19 @@ describe("sync", () => {
   // (8:30pm in New York is already the next day in UTC), so a sync before and
   // after that hour lands on two different days. The sidecar has the same line.
   it.fails("dates the snapshot with the user's local calendar date", async () => {
-    const originalTz = process.env.TZ;
-    process.env.TZ = "America/New_York";
-    try {
-      vi.useFakeTimers({ toFake: ["Date"] });
-      vi.setSystemTime(new Date("2026-11-07T01:30:00Z")); // 8:30pm Nov 6 in New York
-      const host = makeHost(configured({ storage: { account_mapping: '{"sf-roth":"wf-retirement"}' } }));
-      host.mount();
-      await screen.findByText("Schwab Roth");
+    // The suite pins TZ=UTC (vitest.config.ts), where local and UTC dates
+    // agree; a zone west of UTC is what exposes the difference.
+    vi.stubEnv("TZ", "America/New_York");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-07T01:30:00Z")); // 8:30pm Nov 6 in New York
+    const host = makeHost(configured({ storage: { account_mapping: '{"sf-roth":"wf-retirement"}' } }));
+    host.mount();
+    await screen.findByText("Schwab Roth");
 
-      fireEvent.click(syncButton());
+    fireEvent.click(syncButton());
 
-      await waitFor(() => expect(host.api.snapshots.save).toHaveBeenCalled());
-      expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
-    } finally {
-      process.env.TZ = originalTz;
-    }
+    await waitFor(() => expect(host.api.snapshots.save).toHaveBeenCalled());
+    expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
   });
 
   // Possible gap: loadAccounts drops accounts with no holdings, so an account
