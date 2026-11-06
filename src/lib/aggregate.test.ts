@@ -20,7 +20,7 @@ describe("aggregateSnapshots", () => {
     expect(aggregateSnapshots([one])).toEqual(one);
   });
 
-  it("sums quantities of a ticker held in several accounts with a quantity-weighted cost", () => {
+  it("merges a ticker across accounts with a quantity-weighted cost", () => {
     const merged = aggregateSnapshots([
       snap([{ symbol: "VTSAX", quantity: "10", currency: "USD", averageCost: "100" }]),
       snap([{ symbol: "vtsax", quantity: "30", currency: "USD", averageCost: "120" }]),
@@ -45,7 +45,7 @@ describe("aggregateSnapshots", () => {
     ]);
   });
 
-  it("drops average cost if any contributing lot lacks one, whichever comes first", () => {
+  it("drops average cost if any lot lacks one, in either order", () => {
     const withCost = { symbol: "VTI", quantity: "10", currency: "USD", averageCost: "100" };
     const noCost = { symbol: "VTI", quantity: "10", currency: "USD" };
     for (const order of [
@@ -64,7 +64,7 @@ describe("aggregateSnapshots", () => {
     expect(merged.positions[0]).not.toHaveProperty("averageCost");
   });
 
-  it("rounds fractional share sums to 6dp without float noise", () => {
+  it("rounds share sums to 6dp", () => {
     const merged = aggregateSnapshots([
       snap([{ symbol: "FXAIX", quantity: "0.1", currency: "USD" }]),
       snap([{ symbol: "FXAIX", quantity: "0.2", currency: "USD" }]),
@@ -73,7 +73,7 @@ describe("aggregateSnapshots", () => {
     expect(merged.positions[0].quantity).toBe("1.3");
   });
 
-  it("treats unparseable quantities as zero rather than poisoning the sum", () => {
+  it("treats unparseable quantities as zero", () => {
     const merged = aggregateSnapshots([
       snap([{ symbol: "VTI", quantity: "", currency: "USD" }]),
       snap([{ symbol: "VTI", quantity: "5", currency: "USD" }]),

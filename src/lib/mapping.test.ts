@@ -30,7 +30,7 @@ describe("normalizeCurrency", () => {
 });
 
 describe("mapAccountToSnapshot", () => {
-  it("maps securities to positions with per-share average cost from total cost basis", () => {
+  it("maps securities to positions with average cost per share", () => {
     const snap = mapAccountToSnapshot(
       account({
         currency: "USD",
@@ -46,11 +46,11 @@ describe("mapAccountToSnapshot", () => {
       // 100 / 3 rounded to cents
       { symbol: "VXUS", quantity: "3", currency: "USD", averageCost: "33.33" },
     ]);
-    // balance fully explained by securities → no cash
+    // balance equals market value, so no cash
     expect(snap.cashBalances).toEqual({});
   });
 
-  it("derives cash as balance minus non-cash market value (covers uninvested sweep)", () => {
+  it("derives cash as balance minus market value", () => {
     const snap = mapAccountToSnapshot(
       account({
         currency: "USD",
@@ -61,14 +61,14 @@ describe("mapAccountToSnapshot", () => {
     expect(snap.cashBalances).toEqual({ USD: "250.55" });
   });
 
-  it("folds money-market funds into cash instead of tracking them as positions", () => {
+  it("folds money-market funds into cash", () => {
     const snap = mapAccountToSnapshot(
       account({
         currency: "USD",
         balance: "11500",
         holdings: [
           holding({ symbol: "VTI", shares: "40", market_value: "10000" }),
-          // case-insensitive match against the cash list
+          // matched case-insensitively
           holding({ symbol: "vmfxx", shares: "1500", market_value: "1500", cost_basis: "1500" }),
         ],
       }),
@@ -88,7 +88,7 @@ describe("mapAccountToSnapshot", () => {
       }),
       ["mycash"],
     );
-    // VMFXX is no longer cash, so it is a position and is subtracted from balance
+    // VMFXX isn't in the custom list, so it's a position
     expect(snap.positions.map((p) => p.symbol)).toEqual(["VMFXX"]);
     expect(snap.cashBalances).toEqual({ USD: "200" });
   });
@@ -107,7 +107,7 @@ describe("mapAccountToSnapshot", () => {
     expect(snap.cashBalances).toEqual({ USD: "0.1" });
   });
 
-  it("drops non-positive cash (e.g. margin debit) rather than writing a negative balance", () => {
+  it("drops negative cash (e.g. margin debit)", () => {
     const snap = mapAccountToSnapshot(
       account({
         balance: "9000",
@@ -117,7 +117,7 @@ describe("mapAccountToSnapshot", () => {
     expect(snap.cashBalances).toEqual({});
   });
 
-  it("uses the account currency when the account omits/garbles it, else defaults to USD", () => {
+  it("falls back to the account currency, then USD", () => {
     const cad = mapAccountToSnapshot(
       account({
         currency: "cad",
@@ -168,7 +168,7 @@ describe("mapAccountToSnapshot", () => {
         holdings: [
           holding({ symbol: "  VTI  ", shares: "1" }),
           holding({ symbol: "", shares: "5" }),
-          // the Bridge type says symbol is required, but don't trust it
+          // the type requires symbol, but the Bridge may omit it
           { id: "x", shares: "5" } as unknown as SimpleFinHolding,
         ],
       }),
@@ -176,10 +176,9 @@ describe("mapAccountToSnapshot", () => {
     expect(snap.positions.map((p) => p.symbol)).toEqual(["VTI"]);
   });
 
-  it("treats a symbol-less holding's market value as cash (current behaviour)", () => {
-    // Symbol-less holdings (some CDs/bonds) are skipped *before* their market
-    // value is subtracted, so their value lands in the cash balance. This pins
-    // the behaviour so a change to it is deliberate.
+  it("counts a symbol-less holding's market value as cash", () => {
+    // Symbol-less holdings (some CDs/bonds) are skipped before their market
+    // value is subtracted. Pins current behaviour.
     const snap = mapAccountToSnapshot(
       account({
         balance: "1000",

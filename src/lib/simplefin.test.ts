@@ -26,7 +26,7 @@ const CLAIM_URL = "https://beta-bridge.simplefin.org/simplefin/claim/DEMO-TOKEN"
 const ACCESS_URL = "https://user123:pa55word@beta-bridge.simplefin.org/simplefin";
 
 describe("ALLOWED_BRIDGE_HOSTS", () => {
-  it("matches network.allowedHosts in manifest.json (the broker enforces the manifest)", () => {
+  it("matches network.allowedHosts in manifest.json", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"),
     ) as { network: { allowedHosts: string[] } };
@@ -38,7 +38,7 @@ describe("isAccessUrl", () => {
   it("distinguishes access URLs from base64 setup tokens", () => {
     expect(isAccessUrl(ACCESS_URL)).toBe(true);
     expect(isAccessUrl("  HTTPS://x@bridge.simplefin.org/simplefin\n")).toBe(true);
-    // a setup token is base64 of a claim URL, so it starts "aHR0c..." not "http"
+    // a setup token is base64 of a claim URL, so it starts "aHR0c"
     expect(isAccessUrl(btoa(CLAIM_URL))).toBe(false);
   });
 });
@@ -68,22 +68,21 @@ describe("splitAccessUrl", () => {
     expect(baseUrl).not.toContain("pa55word");
   });
 
-  it("rejects hosts outside the manifest allowlist with an explanatory error", () => {
+  it("rejects hosts outside the allowlist", () => {
     expect(() => splitAccessUrl("https://u:p@my-bridge.example.com/simplefin")).toThrow(
       DisallowedHostError,
     );
     expect(() => splitAccessUrl("https://u:p@my-bridge.example.com/simplefin")).toThrow(
       /my-bridge\.example\.com.*self-hosted/s,
     );
-    // lookalike suffix must not pass a naive endsWith check
+    // lookalike host
     expect(() => splitAccessUrl("https://u:p@evilbridge.simplefin.org.example/x")).toThrow(
       DisallowedHostError,
     );
   });
 
-  // BUG (minor): a URL with no `user:pass@` passes isAccessUrl and splits into
-  // credentials of btoa(":"). The addon saves it, toasts "access URL saved",
-  // and every subsequent request fails with an opaque HTTP 403.
+  // BUG (minor): a URL with no `user:pass@` splits into credentials of btoa(":").
+  // The addon reports it saved, then requests fail with a generic HTTP error.
   it.fails("rejects an access URL that carries no credentials", () => {
     expect(() => splitAccessUrl("https://bridge.simplefin.org/simplefin")).toThrow();
   });
@@ -113,7 +112,7 @@ describe("claimToken", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("refuses to spend a token whose claim URL is on a disallowed host", async () => {
+  it("rejects a claim URL on a disallowed host without a request", async () => {
     const request = broker(respond(200, ACCESS_URL));
     await expect(
       claimToken(btoa("https://evil.example.com/claim/abc"), request),
@@ -140,7 +139,7 @@ describe("claimToken", () => {
 });
 
 describe("resolveAccessUrl", () => {
-  it("returns an access URL as-is (trimmed) without spending anything", async () => {
+  it("returns an access URL trimmed, without a request", async () => {
     const request = broker(respond(500, ""));
     await expect(resolveAccessUrl(` ${ACCESS_URL} `, request)).resolves.toBe(ACCESS_URL);
     expect(request).not.toHaveBeenCalled();
@@ -160,7 +159,7 @@ describe("fetchAccounts", () => {
 
   const BASE = "https://beta-bridge.simplefin.org/simplefin";
 
-  it("names the secret for the broker instead of sending credentials, and pins start-date to now", async () => {
+  it("sends the secret name, not credentials, and pins start-date to now", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-06T12:00:00.999Z"));
     const body = { errors: [], accounts: [{ id: "a", name: "A", balance: "1" }] };

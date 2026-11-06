@@ -59,7 +59,7 @@ const SF_ACCOUNTS: SimpleFinAccount[] = [
     balance: "300",
     holdings: [{ id: "h4", symbol: "SCHB", shares: "3", market_value: "300" }],
   },
-  // a cash account with no holdings: not offered for mapping
+  // no holdings, so not offered for mapping
   { id: "sf-checking", name: "Checking", currency: "USD", balance: "999" },
 ];
 
@@ -209,7 +209,7 @@ describe("addon registration", () => {
 });
 
 describe("initial load", () => {
-  it("loads saved accounts through the broker using the named secret, never a raw credential", async () => {
+  it("loads accounts with the named secret, not the raw credential", async () => {
     const host = makeHost(configured({ storage: { account_mapping: '{"sf-ira":"wf-retirement"}' } }));
     host.mount();
 
@@ -228,7 +228,7 @@ describe("initial load", () => {
     expect(host.api.toast.success).not.toHaveBeenCalled();
   });
 
-  it("does not contact the Bridge when only one half of the credential is stored", async () => {
+  it("skips the Bridge when half the credential is missing", async () => {
     const host = makeHost({ storage: { bridge_base_url: BASE_URL } });
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
@@ -246,7 +246,7 @@ describe("initial load", () => {
     );
   });
 
-  it("migrates pre-3.6 keyring state to base URL + credential + durable mapping", async () => {
+  it("migrates pre-3.6 keyring state", async () => {
     const legacyMapping = '{"sf-taxable":"wf-taxable"}';
     const host = makeHost({
       secrets: { access_url: ACCESS_URL, account_mapping: legacyMapping },
@@ -264,7 +264,7 @@ describe("initial load", () => {
   });
 
   it("keeps the legacy access URL if it can't be migrated", async () => {
-    // a self-hosted bridge can't be reached from the sandbox; don't destroy it
+    // a self-hosted bridge isn't an allowed host
     const legacy = "https://u:p@bridge.example.com/simplefin";
     const host = makeHost({ secrets: { access_url: legacy } });
     host.mount();
@@ -278,7 +278,7 @@ describe("initial load", () => {
     expect(host.bridge).not.toHaveBeenCalled();
   });
 
-  it("still loads the mapping and accounts list when the keyring is unavailable", async () => {
+  it("loads the mapping and accounts when the keyring is unavailable", async () => {
     const host = makeHost({
       keyringDown: true,
       storage: { bridge_base_url: BASE_URL, account_mapping: '{"sf-ira":"wf-retirement"}' },
@@ -292,7 +292,7 @@ describe("initial load", () => {
 });
 
 describe("saving credentials", () => {
-  it("claims a setup token, splits it, and stores each half in the right place", async () => {
+  it("claims a setup token and stores each half separately", async () => {
     const host = makeHost();
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
@@ -303,7 +303,7 @@ describe("saving credentials", () => {
     expect(claimRequests(host)).toEqual([[{ url: CLAIM_URL, method: "POST" }]]);
     expect(host.storage.get("bridge_base_url")).toBe(BASE_URL);
     expect(host.secrets.get("bridge_credentials")).toBe(CREDENTIALS);
-    // the credential must never land in (unencrypted) durable storage
+    // storage is unencrypted, so the credential must not be in it
     expect([...host.storage.values()].join()).not.toContain(CREDENTIALS);
     expect([...host.storage.values()].join()).not.toContain("s3cret");
     expect(host.api.toast.success).toHaveBeenCalledWith("Token claimed and saved");
@@ -323,7 +323,7 @@ describe("saving credentials", () => {
     expect(host.api.toast.success).toHaveBeenCalledWith("SimpleFIN access URL saved");
   });
 
-  it("refuses to spend a one-time token when the keyring is known to be unavailable", async () => {
+  it("doesn't spend a token when the keyring is unavailable", async () => {
     const host = makeHost({ keyringDown: true });
     host.mount();
     await screen.findByText("System keyring unavailable");
@@ -345,12 +345,12 @@ describe("saving credentials", () => {
     await screen.findByText(/approve the bridge host under “Network hosts”/);
   });
 
-  it("holds a claimed credential when the keyring write fails, without re-spending the token", async () => {
+  it("holds a claimed credential when the keyring write fails", async () => {
     const host = makeHost();
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
 
-    host.state.keyringDown = true; // e.g. keyring locked after page load
+    host.state.keyringDown = true; // keyring locked after page load
     pasteAndSave(SETUP_TOKEN);
 
     await screen.findByRole("button", { name: "Retry save" });
@@ -359,17 +359,15 @@ describe("saving credentials", () => {
     expect(host.secrets.has("bridge_credentials")).toBe(false);
   });
 
-  // BUG: Retry save can't succeed, for two compounding reasons:
-  //  1. The failed write flips `keyring` to "unavailable", and saveAccessUrl's
-  //     "don't spend a token" guard then short-circuits every save, including
-  //     the retry of an already-claimed credential, which would spend nothing.
-  //  2. Even past that guard, the input still holds the consumed token (it is
-  //     only cleared on success), and a non-empty input takes precedence over
-  //     `pending` — so the retry would try to claim the spent token again.
-  // A reload drops `pending`, so the access the token granted is lost. Both
-  // must be fixed (skip the guard and prefer `pending` while one is held) for
-  // this to pass; flip `it.fails` to `it` then.
-  it.fails("lets Retry save persist the held credential once the keyring is back", async () => {
+  // BUG: Retry save can't succeed:
+  //  1. A failed write sets `keyring` to "unavailable", and saveAccessUrl's
+  //     "don't spend a token" guard then blocks every save, including a retry
+  //     of the already-claimed credential.
+  //  2. The input still holds the spent token (it is cleared only on success),
+  //     and a non-empty input wins over `pending`, so the retry claims it again.
+  // A reload drops `pending`, and the access is lost. Fix both, then change
+  // `it.fails` to `it`.
+  it.fails("Retry save persists the held credential once the keyring is back", async () => {
     const host = makeHost();
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
@@ -389,7 +387,7 @@ describe("saving credentials", () => {
 });
 
 describe("refresh", () => {
-  it("names the missing half when the credential is saved but the base URL is not", async () => {
+  it("reports a missing base URL", async () => {
     const host = makeHost({ secrets: { bridge_credentials: CREDENTIALS } });
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
@@ -400,7 +398,7 @@ describe("refresh", () => {
     expect(host.bridge).not.toHaveBeenCalled();
   });
 
-  it("reloads accounts on demand and reports how many have holdings", async () => {
+  it("reloads accounts and reports the count", async () => {
     const host = makeHost(configured());
     host.mount();
     await screen.findByText("Vanguard Brokerage");
@@ -435,7 +433,7 @@ describe("refresh", () => {
 });
 
 describe("account mapping", () => {
-  it("persists mapping changes to durable storage, and unmapping removes the entry", async () => {
+  it("saves mapping changes and removes unmapped entries", async () => {
     const host = makeHost(configured());
     host.mount();
     await screen.findByText("Vanguard Brokerage");
@@ -453,7 +451,7 @@ describe("account mapping", () => {
     await waitFor(() =>
       expect(JSON.parse(host.storage.get("account_mapping")!)).toEqual({ "sf-ira": "wf-retirement" }),
     );
-    // not a secret: must not touch the keyring
+    // the mapping isn't secret, so the keyring is untouched
     expect(host.api.secrets.set).not.toHaveBeenCalled();
   });
 
@@ -466,7 +464,7 @@ describe("account mapping", () => {
     mapTo("Vanguard Brokerage", "wf-taxable");
 
     await screen.findByText("Couldn't save the account mapping: database is locked");
-    // the selection still shows, so the user can see what didn't stick
+    // the unsaved selection stays visible
     const row = screen.getByText("Vanguard Brokerage").closest("li")!;
     expect(within(row).getByRole("combobox")).toHaveProperty("value", "wf-taxable");
     expect(host.storage.has("account_mapping")).toBe(false);
@@ -476,7 +474,7 @@ describe("account mapping", () => {
 describe("sync", () => {
   const syncButton = () => screen.getByRole("button", { name: /sync now/i });
 
-  it("aggregates accounts mapped to the same Wealthfolio account into one dated snapshot", async () => {
+  it("saves one aggregated snapshot per Wealthfolio account", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
     const host = makeHost(
@@ -541,7 +539,7 @@ describe("sync", () => {
     );
   });
 
-  it("tells the user when nothing mapped is loaded", async () => {
+  it("says so when no mapped account is loaded", async () => {
     // mapping refers to an account the Bridge no longer returns
     const host = makeHost(configured({ storage: { account_mapping: '{"sf-gone":"wf-taxable"}' } }));
     host.mount();
@@ -557,13 +555,10 @@ describe("sync", () => {
     expect(host.api.snapshots.save).not.toHaveBeenCalled();
   });
 
-  // BUG: the snapshot date is `new Date().toISOString().slice(0, 10)`, i.e. the
-  // *UTC* date. West of UTC, an evening sync is written under tomorrow's date
-  // (8:30pm in New York is already the next day in UTC), so a sync before and
-  // after that hour lands on two different days. The sidecar has the same line.
-  it.fails("dates the snapshot with the user's local calendar date", async () => {
-    // The suite pins TZ=UTC (vitest.config.ts), where local and UTC dates
-    // agree; a zone west of UTC is what exposes the difference.
+  // BUG: the snapshot date is the UTC date (`toISOString().slice(0, 10)`), so
+  // west of UTC an evening sync gets tomorrow's date. The sidecar has the same line.
+  it.fails("dates the snapshot with the local date", async () => {
+    // The suite pins TZ=UTC, where local and UTC dates agree.
     vi.stubEnv("TZ", "America/New_York");
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-07T01:30:00Z")); // 8:30pm Nov 6 in New York
@@ -577,10 +572,8 @@ describe("sync", () => {
     expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
   });
 
-  // Possible gap: loadAccounts drops accounts with no holdings, so an account
-  // that has been fully liquidated (holdings: []) disappears from the mapping UI
-  // and is skipped by Sync — Wealthfolio keeps showing its last positions
-  // instead of an all-cash snapshot. Depends on what the Bridge reports for an
-  // emptied brokerage account, so left as a todo rather than asserted.
-  it.todo("writes an all-cash snapshot for a mapped account whose holdings went to zero");
+  // Possible gap: loadAccounts drops accounts with no holdings, so a fully sold
+  // account leaves the mapping UI and is never synced. Wealthfolio keeps its
+  // last positions. Depends on what the Bridge returns for it (unverified).
+  it.todo("writes an all-cash snapshot for a mapped account with no holdings");
 });

@@ -1,14 +1,12 @@
 import { defineConfig } from "vitest/config";
 
-// Kept separate from vite.config.ts so tests don't run through the addon's
-// library build (tailwind, externals). Tests needing a DOM opt in per file with
-// a `// @vitest-environment jsdom` pragma.
+// Separate from vite.config.ts so tests skip the library build. DOM tests opt
+// in with a `// @vitest-environment jsdom` pragma.
 export default defineConfig({
   test: {
     include: ["src/**/*.test.{ts,tsx}"],
     environment: "node",
-    // Snapshot dates come from the wall clock, so pin the zone: results must
-    // not depend on where the suite runs. Tests that need another zone stub it.
+    // Snapshot dates use the clock, so pin the zone. Tests can stub another.
     env: { TZ: "UTC" },
     coverage: {
       provider: "v8",
