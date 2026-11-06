@@ -51,6 +51,10 @@ function localDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function hasHoldings(account: SimpleFinAccount): boolean {
+  return (account.holdings?.length ?? 0) > 0;
+}
+
 /** Run an operation, reporting whether the secret store rejected it. */
 async function trySecret<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
   try {
@@ -243,8 +247,10 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setError(null);
     try {
       const response = await fetchAccounts(url, SECRET_CREDENTIALS, request);
-      const investment = response.accounts.filter((a) => (a.holdings?.length ?? 0) > 0);
-      setSfAccounts(investment);
+      // Keep every account; which ones are shown is decided at render time, so a
+      // mapped account that has sold all its holdings stays listed and synced.
+      setSfAccounts(response.accounts);
+      const investment = response.accounts.filter(hasHoldings);
       if (response.errors?.length) {
         ctx.api.toast.warning(`SimpleFIN reported: ${response.errors.join("; ")}`);
       }
@@ -342,6 +348,10 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   }
 
   const mappedCount = Object.keys(mapping).length;
+  // Offer accounts with holdings, plus any already mapped: a fully sold account
+  // has none, but still needs an all-cash snapshot or Wealthfolio keeps its old
+  // positions.
+  const listedAccounts = sfAccounts.filter((a) => hasHoldings(a) || Boolean(mapping[a.id]));
 
   return (
     <Page>
@@ -415,14 +425,14 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
                 Refresh from SimpleFIN
               </Button>
             </div>
-            {sfAccounts.length === 0 ? (
+            {listedAccounts.length === 0 ? (
               <p className="text-muted-foreground text-sm">
                 No investment accounts loaded yet. Save your token, then click “Refresh from
                 SimpleFIN”.
               </p>
             ) : (
               <ul className="flex flex-col gap-3">
-                {sfAccounts.map((account) => (
+                {listedAccounts.map((account) => (
                   <li
                     key={account.id}
                     className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"

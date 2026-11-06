@@ -562,8 +562,31 @@ describe("sync", () => {
     expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
   });
 
-  // Possible gap: loadAccounts drops accounts with no holdings, so a fully sold
-  // account leaves the mapping UI and is never synced. Wealthfolio keeps its
-  // last positions. Depends on what the Bridge returns for it (unverified).
-  it.todo("writes an all-cash snapshot for a mapped account with no holdings");
+  it("writes an all-cash snapshot for a mapped account with no holdings", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
+    const soldOff: SimpleFinAccount = {
+      id: "sf-roth",
+      name: "Schwab Roth",
+      currency: "USD",
+      balance: "1200",
+      holdings: [],
+    };
+    const host = makeHost(
+      configured({
+        accounts: [SF_ACCOUNTS[0], soldOff, SF_ACCOUNTS[3]],
+        storage: { account_mapping: '{"sf-roth":"wf-retirement"}' },
+      }),
+    );
+    host.mount();
+
+    // still listed because it is mapped; an unmapped account with no holdings is not
+    await screen.findByText("Schwab Roth");
+    expect(screen.queryByText("Checking")).toBeNull();
+
+    fireEvent.click(syncButton());
+
+    await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
+    expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "1200" }, "2026-11-06");
+  });
 });
