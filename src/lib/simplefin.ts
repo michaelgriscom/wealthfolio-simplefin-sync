@@ -32,6 +32,22 @@ export interface SimpleFinHolding {
   symbol: string;
 }
 
+/**
+ * A SimpleFIN transaction. `amount` is signed from the account holder's side:
+ * negative is money leaving a bank account, or a new charge on a card.
+ * `posted` is 0 while pending.
+ */
+export interface SimpleFinTransaction {
+  id: string;
+  posted: number;
+  amount: string;
+  description: string;
+  transacted_at?: number;
+  pending?: boolean;
+  payee?: string;
+  memo?: string;
+}
+
 /** A SimpleFIN account (cash or investment). `holdings` is present for brokerages. */
 export interface SimpleFinAccount {
   org?: { name?: string; domain?: string };
@@ -43,6 +59,7 @@ export interface SimpleFinAccount {
   "available-balance"?: string;
   "balance-date"?: number;
   holdings?: SimpleFinHolding[];
+  transactions?: SimpleFinTransaction[];
   /** The connection (institution login) this account comes through. */
   conn_id?: string;
 }
@@ -229,16 +246,20 @@ export async function resolveAccessUrl(
  * header ("must use request.auth.secretKey") and rejects credentials embedded in
  * the URL, so there is no path around a secret store that isn't working.
  *
- * `start-date` is pinned to "now" so the response carries current holdings
- * without dragging in the full transaction history.
+ * Holdings and balances are always current. `transactionDays` sets how far back
+ * transactions go; the default of 0 pins `start-date` to "now" so a holdings
+ * refresh doesn't drag in transaction history. Pending transactions are never
+ * requested, so every transaction returned has posted.
  */
 export async function fetchAccounts(
   baseUrl: string,
   secretKey: string,
   request: NetworkRequestFn,
+  opts: { transactionDays?: number } = {},
 ): Promise<SimpleFinResponse> {
   assertAllowedHost(baseUrl);
-  const startDate = Math.floor(Date.now() / 1000);
+  const days = Math.max(0, opts.transactionDays ?? 0);
+  const startDate = Math.floor(Date.now() / 1000) - days * 86_400;
   const res = await request({
     url: `${baseUrl}/accounts?start-date=${startDate}`,
     method: "GET",

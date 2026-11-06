@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import { aggregateSnapshots } from "./lib/aggregate";
 import { mapAccountToSnapshot } from "./lib/mapping";
 import {
+  isDuplicateError,
+  pairTransfers,
+  syncModeFor,
+  toActivity,
+  type SyncActivityCreate,
+  type WfAccountInfo,
+} from "./lib/transactions";
+import {
   fetchAccounts,
   explainRequestError,
   isAccessUrl,
@@ -33,23 +41,35 @@ const STORAGE_MAPPING = "account_mapping";
 
 const ROUTE = "/addon/simplefin-sync";
 
+/**
+ * How many days of transactions each sync asks the Bridge for. Re-syncing an
+ * overlapping window is safe (activities are keyed by SimpleFIN transaction
+ * id), and 30 days covers a missed week or two of syncs plus slow-posting
+ * card payments.
+ */
+const TRANSACTION_DAYS = 30;
+
 const KEYRING_HELP =
   "Wealthfolio can't reach a system keyring on this machine, so the SimpleFIN " +
   "credential can't be stored. On Linux this usually means no Secret Service " +
   "provider is running — install and start gnome-keyring, KWallet, or KeePassXC " +
   "with Secret Service integration enabled, then reopen Wealthfolio.";
 
-interface WfAccount {
-  id: string;
-  name: string;
-  currency: string;
-}
+type WfAccount = WfAccountInfo;
 
 /** Whether the host's secret store is usable. Probed once on mount. */
 type KeyringState = "probing" | "ok" | "unavailable";
 
 function hasHoldings(account: SimpleFinAccount): boolean {
   return (account.holdings?.length ?? 0) > 0;
+}
+
+/** Second line of an account row: what SimpleFIN returned for it. */
+function accountSummary(account: SimpleFinAccount): string {
+  const org = account.org?.name ?? "SimpleFIN";
+  if (hasHoldings(account)) return `${org} · ${account.holdings?.length ?? 0} holdings`;
+  const txns = account.transactions?.length ?? 0;
+  return `${org} · ${txns} transaction${txns === 1 ? "" : "s"} in the last ${TRANSACTION_DAYS} days`;
 }
 
 /** Run an operation, reporting whether the secret store rejected it. */
@@ -105,7 +125,15 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
 
       try {
         const accounts = await ctx.api.accounts.getAll();
-        setWfAccounts(accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency })));
+        setWfAccounts(
+          accounts.map((a) => ({
+            id: a.id,
+            name: a.name,
+            currency: a.currency,
+            accountType: a.accountType,
+            trackingMode: a.trackingMode,
+          })),
+        );
       } catch (e) {
         ctx.api.logger.error("Failed to list Wealthfolio accounts: " + (e as Error).message);
       }
@@ -245,7 +273,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetchAccounts(url, SECRET_CREDENTIALS, request);
+      const response = await fetchAccounts(url, SECRET_CREDENTIALS, request, {
+        transactionDays: TRANSACTION_DAYS,
+      });
       // Keep every account; which ones are shown is decided at render time, so a
       // mapped account that has sold all its holdings stays listed and synced.
       setSfAccounts(response.accounts);
@@ -256,7 +286,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         ctx.api.toast.warning(`SimpleFIN reported: ${messages.join("; ")}`);
       }
       if (!opts.silent) {
-        ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
+        ctx.api.toast.success(
+          `Found ${response.accounts.length} account(s), ${investment.length} with holdings`,
+        );
       }
     } catch (e) {
       setError(explainRequestError(e));
@@ -307,13 +339,21 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     let failed = 0;
     let skipped = 0;
     try {
+      const wfById = new Map(wfAccounts.map((a) => [a.id, a]));
       // Group SimpleFIN accounts by their target Wealthfolio account so several
       // mapped to the same account are aggregated into one snapshot (matching
-      // the sidecar) instead of overwriting each other.
+      // the sidecar) instead of overwriting each other. Card and transaction-
+      // tracked cash accounts take the transaction path instead.
       const byWfAccount = new Map<string, SimpleFinAccount[]>();
+      const transactionAccounts: Array<{ sf: SimpleFinAccount; wf: WfAccount }> = [];
       for (const account of sfAccounts) {
         const wfAccountId = mapping[account.id];
         if (!wfAccountId) continue;
+        const wfAccount = wfById.get(wfAccountId);
+        if (wfAccount && syncModeFor(wfAccount) === "transactions") {
+          transactionAccounts.push({ sf: account, wf: wfAccount });
+          continue;
+        }
         const group = byWfAccount.get(wfAccountId);
         if (group) group.push(account);
         else byWfAccount.set(wfAccountId, [account]);
@@ -349,15 +389,20 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
           );
         }
       }
+      const txns = await syncTransactions(transactionAccounts);
+      synced += txns.accountsSynced;
+      failed += txns.accountsFailed;
+
+      const added = txns.created ? ` (${txns.created} new transaction(s))` : "";
       if (synced === 0 && failed === 0 && skipped === 0) {
         ctx.api.toast.info("No mapped accounts to sync. Map an account first.");
       } else if (failed === 0 && skipped === 0) {
-        ctx.api.toast.success(`Synced ${synced} account(s)`);
+        ctx.api.toast.success(`Synced ${synced} account(s)${added}`);
       } else {
         const parts = [`Synced ${synced}`];
         if (failed) parts.push(`failed ${failed}`);
         if (skipped) parts.push(`skipped ${skipped}`);
-        ctx.api.toast.warning(`${parts.join(", ")}. See logs.`);
+        ctx.api.toast.warning(`${parts.join(", ")}${added}. See logs.`);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -366,11 +411,62 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     }
   }
 
+  /**
+   * Create activities for every posted transaction on card and transaction-
+   * tracked cash accounts. Each one carries its SimpleFIN id as an explicit
+   * idempotency key, so transactions already synced come back as duplicates
+   * and are counted, not re-added. An account fails if any create fails for
+   * another reason; its other transactions are still written.
+   */
+  async function syncTransactions(accounts: Array<{ sf: SimpleFinAccount; wf: WfAccount }>) {
+    const result = { accountsSynced: 0, accountsFailed: 0, created: 0 };
+    if (accounts.length === 0) return result;
+
+    const activities: SyncActivityCreate[] = [];
+    for (const { sf, wf } of accounts) {
+      for (const txn of sf.transactions ?? []) {
+        const activity = toActivity(txn, sf, wf);
+        if (activity) activities.push(activity);
+      }
+    }
+    // Pair across every synced account, so a checking-side card payment and
+    // the card-side payment become one transfer rather than an expense.
+    pairTransfers(activities);
+
+    const failedAccounts = new Set<string>();
+    let duplicates = 0;
+    for (const activity of activities) {
+      try {
+        await ctx.api.activities.create(activity);
+        result.created += 1;
+      } catch (e) {
+        if (isDuplicateError(e)) {
+          duplicates += 1;
+          continue;
+        }
+        failedAccounts.add(activity.accountId);
+        ctx.api.logger.error(
+          `Transaction ${activity.sourceRecordId} failed for ${activity.accountId}: ` +
+            (e as Error).message,
+        );
+      }
+    }
+
+    const wfIds = new Set(accounts.map((a) => a.wf.id));
+    result.accountsFailed = failedAccounts.size;
+    result.accountsSynced = wfIds.size - failedAccounts.size;
+    ctx.api.logger.info(
+      `Transactions: ${result.created} created, ${duplicates} already synced, ` +
+        `across ${wfIds.size} account(s)`,
+    );
+    return result;
+  }
+
   const mappedCount = Object.keys(mapping).length;
-  // Offer accounts with holdings, plus any already mapped: a fully sold account
-  // has none, but still needs an all-cash snapshot or Wealthfolio keeps its old
-  // positions.
-  const listedAccounts = sfAccounts.filter((a) => hasHoldings(a) || Boolean(mapping[a.id]));
+  // Every account is listed: brokerages sync holdings, and cards and bank
+  // accounts sync transactions. Which path is taken depends on the Wealthfolio
+  // account each one is mapped to.
+  const listedAccounts = sfAccounts;
 
   return (
     <Page>
@@ -380,8 +476,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
             <h1 className="text-lg font-semibold sm:text-xl">SimpleFIN Sync</h1>
           </div>
           <p className="text-muted-foreground text-sm sm:text-base">
-            Pull current investment holdings from the SimpleFIN Bridge and write them as dated
-            snapshots to your Wealthfolio HOLDINGS-mode accounts.
+            Pull investment holdings from the SimpleFIN Bridge as dated snapshots, and card and
+            bank transactions as Wealthfolio activities.
           </p>
         </div>
       </PageHeader>
@@ -449,7 +545,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
             </div>
             {listedAccounts.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                No investment accounts loaded yet. Save your token, then click “Refresh from
+                No accounts loaded yet. Save your token, then click “Refresh from
                 SimpleFIN”.
               </p>
             ) : (
@@ -462,7 +558,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{account.name}</p>
                       <p className="text-muted-foreground text-xs">
-                        {account.org?.name ?? "SimpleFIN"} · {account.holdings?.length ?? 0} holdings
+                        {accountSummary(account)}
                       </p>
                     </div>
                     <select
@@ -482,8 +578,11 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
               </ul>
             )}
             <p className="text-muted-foreground mt-3 text-xs">
-              Map each SimpleFIN account to a Wealthfolio account that uses HOLDINGS tracking mode.
-              Create those accounts in Wealthfolio first if they don’t exist yet.
+              Map brokerage accounts to Wealthfolio accounts in HOLDINGS tracking mode; they get a
+              holdings snapshot. Map credit cards to a Credit Card account, and bank accounts to a
+              Cash account that tracks transactions; they get the last {TRANSACTION_DAYS} days of
+              posted transactions, skipping any already synced. Create those accounts in
+              Wealthfolio first if they don’t exist yet.
             </p>
           </section>
 
@@ -491,7 +590,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
           <section className="rounded-lg border p-4">
             <h2 className="mb-1 text-base font-semibold">3. Sync</h2>
             <p className="text-muted-foreground mb-3 text-sm">
-              Writes today’s holdings snapshot for each mapped account ({mappedCount} mapped).
+              Writes today’s holdings snapshot or new transactions for each mapped account (
+              {mappedCount} mapped).
             </p>
             <Button onClick={syncNow} disabled={busy || mappedCount === 0}>
               {busy ? <Icons.Loader className="mr-2 h-4 w-4 animate-spin" /> : null}

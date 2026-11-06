@@ -2,7 +2,7 @@
   "id": "wealthfolio-simplefin-sync",
   "name": "SimpleFIN Sync",
   "version": "1.0.2",
-  "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots, for automatic asset-allocation tracking.",
+  "description": "Sync investment holdings from SimpleFIN Bridge into Wealthfolio as dated holdings snapshots, and card and bank transactions as activities.",
   "author": "Michael Griscom",
   "main": "dist/addon.js",
   "sdkVersion": "3.6.2",
@@ -48,6 +48,13 @@
         "save"
       ],
       "purpose": "Write current holdings and cash balances as dated snapshots to HOLDINGS-mode accounts."
+    },
+    {
+      "category": "activities",
+      "functions": [
+        "create"
+      ],
+      "purpose": "Record posted credit card and bank transactions as activities in Credit Card and transaction-tracked Cash accounts."
     },
     {
       "category": "network",

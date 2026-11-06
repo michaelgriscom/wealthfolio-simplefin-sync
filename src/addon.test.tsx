@@ -59,7 +59,7 @@ const SF_ACCOUNTS: SimpleFinAccount[] = [
     balance: "300",
     holdings: [{ id: "h4", symbol: "SCHB", shares: "3", market_value: "300" }],
   },
-  // no holdings, so not offered for mapping
+  // no holdings: listed so it can be mapped to a transaction-tracked account
   { id: "sf-checking", name: "Checking", currency: "USD", balance: "999" },
 ];
 
@@ -71,6 +71,8 @@ interface HostOptions {
   accounts?: SimpleFinAccount[];
   bridgeErrors?: string[];
   bridgeErrlist?: SimpleFinError[];
+  /** Extra Wealthfolio accounts, after the two default HOLDINGS ones. */
+  wfAccounts?: Array<Record<string, unknown>>;
 }
 
 /** A fake Wealthfolio host: in-memory storage/keyring and a scripted Bridge. */
@@ -78,6 +80,7 @@ function makeHost(opts: HostOptions = {}) {
   const storage = new Map(Object.entries(opts.storage ?? {}));
   const secrets = new Map(Object.entries(opts.secrets ?? {}));
   const state = { keyringDown: opts.keyringDown ?? false };
+  const activityKeys = new Set<string>();
   const keyring = () => {
     if (state.keyringDown) throw new Error("org.freedesktop.secrets was not provided");
   };
@@ -123,7 +126,20 @@ function makeHost(opts: HostOptions = {}) {
       getAll: vi.fn(async () => [
         { id: "wf-taxable", name: "Taxable", currency: "USD" },
         { id: "wf-retirement", name: "Retirement", currency: "USD" },
+        ...(opts.wfAccounts ?? []),
       ]),
+    },
+    activities: {
+      // Mirrors the host: an explicit idempotency key that already exists is
+      // rejected as a duplicate.
+      create: vi.fn(async (activity: Record<string, unknown>) => {
+        const key = activity.idempotencyKey as string;
+        if (activityKeys.has(key)) {
+          throw new Error("Duplicate activity detected. A matching activity already exists.");
+        }
+        activityKeys.add(key);
+        return { id: `act-${activityKeys.size}`, ...activity };
+      }),
     },
     snapshots: {
       save: vi.fn(
@@ -221,8 +237,8 @@ describe("initial load", () => {
     expect(JSON.stringify(req)).not.toContain(CREDENTIALS);
     expect(req.url).not.toContain("s3cret");
 
-    // only accounts with holdings are offered for mapping
-    expect(screen.queryByText("Checking")).toBeNull();
+    // accounts without holdings are listed too, for transaction sync
+    expect(screen.getByText("Checking")).toBeTruthy();
     // saved mapping is prepopulated
     const ira = screen.getByText("Fidelity IRA").closest("li")!;
     expect(within(ira).getByRole("combobox")).toHaveProperty("value", "wf-retirement");
@@ -417,7 +433,7 @@ describe("refresh", () => {
 
     await waitFor(() =>
       expect(host.api.toast.success).toHaveBeenCalledWith(
-        "Found 3 investment account(s) with holdings",
+        "Found 4 account(s), 3 with holdings",
       ),
     );
     expect(accountRequests(host)).toHaveLength(1);
@@ -588,9 +604,8 @@ describe("sync", () => {
     );
     host.mount();
 
-    // still listed because it is mapped; an unmapped account with no holdings is not
+    // still listed although it has no holdings
     await screen.findByText("Schwab Roth");
-    expect(screen.queryByText("Checking")).toBeNull();
 
     fireEvent.click(syncButton());
 
@@ -683,5 +698,137 @@ describe("sync", () => {
       expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 1, skipped 1. See logs.");
       expect(host.api.snapshots.save.mock.calls.map((c) => c[0])).toEqual(["wf-taxable"]);
     });
+  });
+});
+
+describe("transaction sync", () => {
+  const POSTED = Date.UTC(2026, 10, 2, 12) / 1000;
+  const DAY = 86_400;
+  const card: SimpleFinAccount = {
+    id: "sf-card",
+    name: "Sapphire Card",
+    currency: "USD",
+    balance: "-120.50",
+    transactions: [
+      { id: "c1", posted: POSTED, amount: "-45.10", description: "BLUE BOTTLE COFFEE" },
+      { id: "c2", posted: POSTED, amount: "-45.10", description: "BLUE BOTTLE COFFEE" },
+      { id: "c3", posted: POSTED + DAY, amount: "500.00", description: "AUTOPAY PAYMENT - THANK YOU" },
+      { id: "c4", posted: POSTED, amount: "12.00", description: "RETURN: HARDWARE STORE" },
+      { id: "c5", posted: 0, amount: "-9.99", description: "STREAMING", pending: true },
+    ],
+  };
+  const checking: SimpleFinAccount = {
+    id: "sf-checking",
+    name: "Checking",
+    currency: "USD",
+    balance: "2000",
+    transactions: [
+      { id: "k1", posted: POSTED, amount: "-500.00", description: "CHASE CREDIT CRD AUTOPAY" },
+      { id: "k2", posted: POSTED, amount: "3000.00", description: "PAYROLL ACME CORP" },
+    ],
+  };
+  const wfAccounts = [
+    { id: "wf-card", name: "Card", currency: "USD", accountType: "CREDIT_CARD", trackingMode: "TRANSACTIONS" },
+    { id: "wf-checking", name: "Bank", currency: "USD", accountType: "CASH", trackingMode: "TRANSACTIONS" },
+  ];
+  const syncButton = () => screen.getByRole("button", { name: /sync now/i });
+
+  async function mountMapped(mapping: Record<string, string>, accounts = [card, checking, SF_ACCOUNTS[1]]) {
+    const host = makeHost(
+      configured({ accounts, wfAccounts, storage: { account_mapping: JSON.stringify(mapping) } }),
+    );
+    host.mount();
+    await screen.findByText("Sapphire Card");
+    return host;
+  }
+  const created = (host: Host) =>
+    host.api.activities.create.mock.calls.map(([a]) => a as Record<string, unknown>);
+
+  it("asks the Bridge for 30 days of transactions", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(Date.UTC(2026, 10, 6, 12)));
+    const host = await mountMapped({});
+    const [[req]] = accountRequests(host);
+    expect(req.url).toBe(`${BASE_URL}/accounts?start-date=${Date.UTC(2026, 10, 6, 12) / 1000 - 30 * DAY}`);
+  });
+
+  it("writes card and bank transactions as activities and pairs the card payment", async () => {
+    const host = await mountMapped({
+      "sf-card": "wf-card",
+      "sf-checking": "wf-checking",
+      "sf-ira": "wf-retirement",
+    });
+    fireEvent.click(syncButton());
+    await waitFor(() =>
+      expect(host.api.toast.success).toHaveBeenCalledWith("Synced 3 account(s) (6 new transaction(s))"),
+    );
+
+    const byId = Object.fromEntries(created(host).map((a) => [a.sourceRecordId, a]));
+    expect(Object.keys(byId).sort()).toEqual(["c1", "c2", "c3", "c4", "k1", "k2"]); // pending c5 skipped
+    expect(byId.c1).toMatchObject({
+      accountId: "wf-card",
+      activityType: "WITHDRAWAL",
+      amount: "45.1",
+      currency: "USD",
+      comment: "BLUE BOTTLE COFFEE",
+      sourceSystem: "SIMPLEFIN",
+      idempotencyKey: "simplefin:sf-card:c1",
+    });
+    // identical same-day charges stay distinct
+    expect(byId.c2.idempotencyKey).toBe("simplefin:sf-card:c2");
+    expect(byId.c4.activityType).toBe("CREDIT");
+    expect(byId.k2.activityType).toBe("DEPOSIT");
+    // both legs of the card payment are one transfer
+    expect(byId.c3.activityType).toBe("TRANSFER_IN");
+    expect(byId.k1.activityType).toBe("TRANSFER_OUT");
+    expect(byId.c3.sourceGroupId).toBeTruthy();
+    expect(byId.c3.sourceGroupId).toBe(byId.k1.sourceGroupId);
+
+    // the brokerage mapped to a HOLDINGS account still gets a snapshot
+    expect(host.api.snapshots.save).toHaveBeenCalledTimes(1);
+    expect(host.api.snapshots.save.mock.calls[0][0]).toBe("wf-retirement");
+  });
+
+  it("does not re-add transactions on the next sync", async () => {
+    const host = await mountMapped({ "sf-card": "wf-card" });
+    fireEvent.click(syncButton());
+    await waitFor(() =>
+      expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s) (4 new transaction(s))"),
+    );
+    fireEvent.click(syncButton());
+    await waitFor(() => expect(host.api.toast.success).toHaveBeenLastCalledWith("Synced 1 account(s)"));
+    expect(host.api.activities.create).toHaveBeenCalledTimes(8);
+  });
+
+  it("reports an account as failed when a create is rejected for another reason", async () => {
+    const host = await mountMapped({ "sf-card": "wf-card", "sf-checking": "wf-checking" });
+    host.api.activities.create.mockImplementation(async (a: Record<string, unknown>) => {
+      if (a.accountId === "wf-checking") throw new Error("Account not found");
+      return { id: "x", ...a };
+    });
+    fireEvent.click(syncButton());
+    await waitFor(() =>
+      expect(host.api.toast.warning).toHaveBeenCalledWith(
+        "Synced 1, failed 1 (4 new transaction(s)). See logs.",
+      ),
+    );
+  });
+
+  it("leaves a cash account in HOLDINGS mode on the snapshot path", async () => {
+    const host = makeHost(
+      configured({
+        accounts: [checking],
+        wfAccounts: [{ id: "wf-cash", name: "Cash", currency: "USD", accountType: "CASH", trackingMode: "HOLDINGS" }],
+        storage: { account_mapping: '{"sf-checking":"wf-cash"}' },
+      }),
+    );
+    host.mount();
+    await screen.findByText("Checking");
+    fireEvent.click(syncButton());
+    // ...where an account SimpleFIN gives no holdings for is skipped, as before
+    await waitFor(() =>
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs."),
+    );
+    expect(host.api.activities.create).not.toHaveBeenCalled();
   });
 });
