@@ -547,9 +547,7 @@ describe("sync", () => {
     expect(host.api.snapshots.save).not.toHaveBeenCalled();
   });
 
-  // BUG: the snapshot date is the UTC date (`toISOString().slice(0, 10)`), so
-  // west of UTC an evening sync gets tomorrow's date. The sidecar has the same line.
-  it.fails("dates the snapshot with the local date", async () => {
+  it("dates the snapshot with the local date", async () => {
     // The suite pins TZ=UTC, where local and UTC dates agree.
     vi.stubEnv("TZ", "America/New_York");
     vi.useFakeTimers({ toFake: ["Date"] });

@@ -45,6 +45,12 @@ interface WfAccount {
 /** Whether the host's secret store is usable. Probed once on mount. */
 type KeyringState = "probing" | "ok" | "unavailable";
 
+/** `YYYY-MM-DD` in the local time zone (not UTC, which `toISOString` uses). */
+function localDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /** Run an operation, reporting whether the secret store rejected it. */
 async function trySecret<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
   try {
@@ -290,7 +296,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   async function syncNow() {
     setBusy(true);
     setError(null);
-    const date = new Date().toISOString().slice(0, 10);
+    const date = localDate(new Date());
     let synced = 0;
     let failed = 0;
     try {
