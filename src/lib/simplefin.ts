@@ -111,6 +111,12 @@ export function splitAccessUrl(accessUrl: string): SplitAccessUrl {
   const u = assertAllowedHost(accessUrl.trim());
   const user = decodeURIComponent(u.username);
   const pass = decodeURIComponent(u.password);
+  if (!user || !pass) {
+    throw new Error(
+      "This access URL has no credentials. A SimpleFIN access URL looks like " +
+        "https://user:pass@bridge.simplefin.org/simplefin; paste the full URL or a setup token.",
+    );
+  }
   u.username = "";
   u.password = "";
   let base = u.toString();
