@@ -43,11 +43,59 @@ export interface SimpleFinAccount {
   "available-balance"?: string;
   "balance-date"?: number;
   holdings?: SimpleFinHolding[];
+  /** The connection (institution login) this account comes through. */
+  conn_id?: string;
+}
+
+/**
+ * A structured error from the protocol's `errlist`, e.g. `con.auth`,
+ * `act.failed`, `act.missingdata`. `conn_id` / `account_id` say what it is about.
+ */
+export interface SimpleFinError {
+  code: string;
+  msg: string;
+  conn_id?: string;
+  account_id?: string;
 }
 
 export interface SimpleFinResponse {
-  errors: string[];
+  /** Deprecated plain-text errors; carries no account or connection. */
+  errors?: string[];
+  errlist?: SimpleFinError[];
   accounts: SimpleFinAccount[];
+}
+
+/**
+ * Why an account's holdings can't be trusted to mean "no positions", or null
+ * if they can. Writing a snapshot from untrusted holdings would wipe the
+ * account's positions in Wealthfolio, while skipping it only leaves them stale.
+ *
+ * Only an explicit `holdings: []` counts as sold off. A missing key means the
+ * account isn't a brokerage or its data didn't come through. An empty list is
+ * still distrusted when an `errlist` entry names the account or its
+ * connection, or, with only the plain-text `errors` to go on, when there are
+ * any errors at all.
+ */
+export function untrustedHoldingsReason(
+  account: SimpleFinAccount,
+  issues: Pick<SimpleFinResponse, "errors" | "errlist">,
+): string | null {
+  if (account.holdings === undefined) return "SimpleFIN returned no holdings for it";
+  if (account.holdings.length > 0) return null;
+  const named = issues.errlist?.find(
+    (e) =>
+      e.account_id === account.id || (e.conn_id !== undefined && e.conn_id === account.conn_id),
+  );
+  if (named) return `SimpleFIN reported a problem with it: ${named.msg}`;
+  if (!issues.errlist?.length && issues.errors?.length) {
+    return "it has no holdings and SimpleFIN reported errors this run";
+  }
+  return null;
+}
+
+/** All error messages in a response, structured and plain-text. */
+export function errorMessages(issues: Pick<SimpleFinResponse, "errors" | "errlist">): string[] {
+  return [...(issues.errlist ?? []).map((e) => e.msg), ...(issues.errors ?? [])];
 }
 
 /**
@@ -111,6 +159,12 @@ export function splitAccessUrl(accessUrl: string): SplitAccessUrl {
   const u = assertAllowedHost(accessUrl.trim());
   const user = decodeURIComponent(u.username);
   const pass = decodeURIComponent(u.password);
+  if (!user || !pass) {
+    throw new Error(
+      "This access URL has no credentials. A SimpleFIN access URL looks like " +
+        "https://user:pass@bridge.simplefin.org/simplefin; paste the full URL or a setup token.",
+    );
+  }
   u.username = "";
   u.password = "";
   let base = u.toString();

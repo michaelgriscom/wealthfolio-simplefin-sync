@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import type { ButtonHTMLAttributes, ComponentType, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import enable from "./addon";
-import type { SimpleFinAccount } from "./lib/simplefin";
+import type { SimpleFinAccount, SimpleFinError } from "./lib/simplefin";
 
 // The host provides @wealthfolio/ui at runtime; plain elements are enough here.
 vi.mock("@wealthfolio/ui", async () => {
@@ -70,6 +70,7 @@ interface HostOptions {
   keyringDown?: boolean;
   accounts?: SimpleFinAccount[];
   bridgeErrors?: string[];
+  bridgeErrlist?: SimpleFinError[];
 }
 
 /** A fake Wealthfolio host: in-memory storage/keyring and a scripted Bridge. */
@@ -95,6 +96,7 @@ function makeHost(opts: HostOptions = {}) {
         headers: {},
         body: JSON.stringify({
           errors: opts.bridgeErrors ?? [],
+          ...(opts.bridgeErrlist ? { errlist: opts.bridgeErrlist } : {}),
           accounts: opts.accounts ?? SF_ACCOUNTS,
         }),
       };
@@ -129,7 +131,7 @@ function makeHost(opts: HostOptions = {}) {
           _accountId: string,
           _positions: unknown[],
           _cash: Record<string, string>,
-          _date: string,
+          _date?: string,
         ): Promise<void> => undefined,
       ),
     },
@@ -246,6 +248,18 @@ describe("initial load", () => {
     );
   });
 
+  it("relays structured errlist messages too", async () => {
+    const host = makeHost(
+      configured({ bridgeErrlist: [{ code: "con.auth", msg: "Schwab needs reauthentication" }] }),
+    );
+    host.mount();
+    await waitFor(() =>
+      expect(host.api.toast.warning).toHaveBeenCalledWith(
+        "SimpleFIN reported: Schwab needs reauthentication",
+      ),
+    );
+  });
+
   it("migrates pre-3.6 keyring state", async () => {
     const legacyMapping = '{"sf-taxable":"wf-taxable"}';
     const host = makeHost({
@@ -357,17 +371,11 @@ describe("saving credentials", () => {
     expect(screen.getByText(/already been consumed/)).toBeTruthy();
     expect(claimRequests(host)).toHaveLength(1);
     expect(host.secrets.has("bridge_credentials")).toBe(false);
+    // the held credential is what gets saved, so the input is locked
+    expect(tokenInput()).toHaveProperty("disabled", true);
   });
 
-  // BUG: Retry save can't succeed:
-  //  1. A failed write sets `keyring` to "unavailable", and saveAccessUrl's
-  //     "don't spend a token" guard then blocks every save, including a retry
-  //     of the already-claimed credential.
-  //  2. The input still holds the spent token (it is cleared only on success),
-  //     and a non-empty input wins over `pending`, so the retry claims it again.
-  // A reload drops `pending`, and the access is lost. Fix both, then change
-  // `it.fails` to `it`.
-  it.fails("Retry save persists the held credential once the keyring is back", async () => {
+  it("Retry save persists the held credential once the keyring is back", async () => {
     const host = makeHost();
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
@@ -475,8 +483,6 @@ describe("sync", () => {
   const syncButton = () => screen.getByRole("button", { name: /sync now/i });
 
   it("saves one aggregated snapshot per Wealthfolio account", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
     const host = makeHost(
       configured({
         storage: {
@@ -501,13 +507,11 @@ describe("sync", () => {
       [{ symbol: "VTI", quantity: "15", currency: "USD", averageCost: "166.67" }],
       // (2600 - 2000) + (1050 - 1000)
       { USD: "650" },
-      "2026-11-06",
     );
     expect(host.api.snapshots.save).toHaveBeenCalledWith(
       "wf-retirement",
       [{ symbol: "SCHB", quantity: "3", currency: "USD" }],
       {},
-      "2026-11-06",
     );
   });
 
@@ -555,13 +559,9 @@ describe("sync", () => {
     expect(host.api.snapshots.save).not.toHaveBeenCalled();
   });
 
-  // BUG: the snapshot date is the UTC date (`toISOString().slice(0, 10)`), so
-  // west of UTC an evening sync gets tomorrow's date. The sidecar has the same line.
-  it.fails("dates the snapshot with the local date", async () => {
-    // The suite pins TZ=UTC, where local and UTC dates agree.
-    vi.stubEnv("TZ", "America/New_York");
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-07T01:30:00Z")); // 8:30pm Nov 6 in New York
+  it("lets Wealthfolio date the snapshot", async () => {
+    // Wealthfolio rejects dates after its own today, computed in its timezone
+    // setting, so the addon must not pass a date of its own.
     const host = makeHost(configured({ storage: { account_mapping: '{"sf-roth":"wf-retirement"}' } }));
     host.mount();
     await screen.findByText("Schwab Roth");
@@ -569,11 +569,119 @@ describe("sync", () => {
     fireEvent.click(syncButton());
 
     await waitFor(() => expect(host.api.snapshots.save).toHaveBeenCalled());
-    expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
+    expect(host.api.snapshots.save.mock.calls[0]).toHaveLength(3);
   });
 
-  // Possible gap: loadAccounts drops accounts with no holdings, so a fully sold
-  // account leaves the mapping UI and is never synced. Wealthfolio keeps its
-  // last positions. Depends on what the Bridge returns for it (unverified).
-  it.todo("writes an all-cash snapshot for a mapped account with no holdings");
+  it("writes an all-cash snapshot for a mapped account with no holdings", async () => {
+    const soldOff: SimpleFinAccount = {
+      id: "sf-roth",
+      name: "Schwab Roth",
+      currency: "USD",
+      balance: "1200",
+      holdings: [],
+    };
+    const host = makeHost(
+      configured({
+        accounts: [SF_ACCOUNTS[0], soldOff, SF_ACCOUNTS[3]],
+        storage: { account_mapping: '{"sf-roth":"wf-retirement"}' },
+      }),
+    );
+    host.mount();
+
+    // still listed because it is mapped; an unmapped account with no holdings is not
+    await screen.findByText("Schwab Roth");
+    expect(screen.queryByText("Checking")).toBeNull();
+
+    fireEvent.click(syncButton());
+
+    await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
+    expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "1200" });
+  });
+
+  describe("untrusted empty holdings", () => {
+    const roth = (extra: Partial<SimpleFinAccount>): SimpleFinAccount => ({
+      id: "sf-roth",
+      name: "Schwab Roth",
+      currency: "USD",
+      balance: "48000",
+      conn_id: "conn-schwab",
+      ...extra,
+    });
+
+    async function syncWith(opts: HostOptions, mapping = '{"sf-roth":"wf-retirement"}') {
+      const host = makeHost(configured({ ...opts, storage: { account_mapping: mapping } }));
+      host.mount();
+      await screen.findByText("Schwab Roth");
+      fireEvent.click(syncButton());
+      await waitFor(() => expect(host.api.toast.warning).toHaveBeenCalledWith(expect.stringMatching(/^Synced/)));
+      return host;
+    }
+
+    it("skips a mapped account whose holdings are missing", async () => {
+      const host = await syncWith({ accounts: [roth({})] });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+      expect(host.api.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Schwab Roth: SimpleFIN returned no holdings"),
+      );
+    });
+
+    it("skips missing holdings when SimpleFIN also reported errors", async () => {
+      const host = await syncWith({
+        accounts: [roth({})],
+        bridgeErrors: ["Connection to Schwab may need attention"],
+      });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when an errlist entry names the account", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrlist: [{ code: "act.missingdata", msg: "Holdings unavailable", account_id: "sf-roth" }],
+      });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when an errlist entry names the account's connection", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrlist: [{ code: "con.auth", msg: "Reauthenticate", conn_id: "conn-schwab" }],
+      });
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when only plain-text errors were reported", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrors: ["Something went wrong"],
+      });
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("writes empty holdings when the errlist is about another account", async () => {
+      const host = makeHost(
+        configured({
+          accounts: [roth({ holdings: [] })],
+          bridgeErrlist: [{ code: "act.failed", msg: "Other failed", account_id: "sf-other", conn_id: "conn-other" }],
+          storage: { account_mapping: '{"sf-roth":"wf-retirement"}' },
+        }),
+      );
+      host.mount();
+      await screen.findByText("Schwab Roth");
+      fireEvent.click(syncButton());
+      await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
+      expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "48000" });
+    });
+
+    it("skips the whole Wealthfolio account when one grouped member is missing holdings", async () => {
+      const host = await syncWith(
+        { accounts: [SF_ACCOUNTS[0], SF_ACCOUNTS[1], roth({})] },
+        '{"sf-taxable":"wf-taxable","sf-ira":"wf-retirement","sf-roth":"wf-retirement"}',
+      );
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 1, skipped 1. See logs.");
+      expect(host.api.snapshots.save.mock.calls.map((c) => c[0])).toEqual(["wf-taxable"]);
+    });
+  });
 });

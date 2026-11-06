@@ -81,10 +81,9 @@ describe("splitAccessUrl", () => {
     );
   });
 
-  // BUG (minor): a URL with no `user:pass@` splits into credentials of btoa(":").
-  // The addon reports it saved, then requests fail with a generic HTTP error.
-  it.fails("rejects an access URL that carries no credentials", () => {
-    expect(() => splitAccessUrl("https://bridge.simplefin.org/simplefin")).toThrow();
+  it("rejects an access URL that carries no credentials", () => {
+    expect(() => splitAccessUrl("https://bridge.simplefin.org/simplefin")).toThrow(/no credentials/);
+    expect(() => splitAccessUrl("https://user@bridge.simplefin.org/simplefin")).toThrow(/no credentials/);
   });
 
   it("throws on input that isn't a URL", () => {
