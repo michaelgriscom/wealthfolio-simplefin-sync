@@ -1,0 +1,13 @@
+# Settings only; this is a single-package repo, not a workspace.
+
+# Refuse to resolve any package version, direct or transitive, published less
+# than 7 days ago (in minutes). Applies whenever the lockfile is re-resolved,
+# including Renovate's lockfile maintenance; a frozen install uses the lockfile
+# as is.
+minimumReleaseAge: 10080
+
+# pnpm 10 runs no dependency lifecycle scripts unless listed in
+# onlyBuiltDependencies. esbuild works without its postinstall (the platform
+# binary comes from its optional @esbuild/* dependency), so none are allowed.
+ignoredBuiltDependencies:
+  - esbuild
