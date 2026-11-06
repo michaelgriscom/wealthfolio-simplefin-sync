@@ -371,6 +371,8 @@ describe("saving credentials", () => {
     expect(screen.getByText(/already been consumed/)).toBeTruthy();
     expect(claimRequests(host)).toHaveLength(1);
     expect(host.secrets.has("bridge_credentials")).toBe(false);
+    // the held credential is what gets saved, so the input is locked
+    expect(tokenInput()).toHaveProperty("disabled", true);
   });
 
   it("Retry save persists the held credential once the keyring is back", async () => {

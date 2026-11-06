@@ -420,6 +420,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
                 className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
                 placeholder={isConfigured ? "•••••••• (saved — paste a new token to replace)" : "Paste your SimpleFIN setup token or access URL"}
                 value={accessUrl}
+                // While a claimed credential is held, Retry save stores it and
+                // ignores the input, so don't let a new paste look like it counts.
+                disabled={Boolean(pending)}
                 onChange={(e) => setAccessUrl(e.target.value)}
               />
               <Button onClick={saveAccessUrl} disabled={busy || (!accessUrl.trim() && !pending)}>
@@ -430,7 +433,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
               <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
                 Your token was claimed successfully but couldn’t be stored. It has already been
                 consumed, so don’t paste it again — fix the keyring problem above, then click
-                “Retry save”.
+                “Retry save” to store the held credential.
               </p>
             ) : null}
           </section>
