@@ -350,7 +350,18 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         const wfAccountId = mapping[account.id];
         if (!wfAccountId) continue;
         const wfAccount = wfById.get(wfAccountId);
-        if (wfAccount && syncModeFor(wfAccount) === "transactions") {
+        if (!wfAccount) {
+          // Without the account's type there's no telling whether it takes a
+          // snapshot or transactions, and a snapshot on a card account would
+          // be wrong, so don't guess.
+          failed += 1;
+          ctx.api.logger.error(
+            `Skipped ${account.name}: Wealthfolio account ${wfAccountId} wasn't found ` +
+              "(it may have been deleted, or the account list failed to load)",
+          );
+          continue;
+        }
+        if (syncModeFor(wfAccount) === "transactions") {
           transactionAccounts.push({ sf: account, wf: wfAccount });
           continue;
         }
@@ -431,25 +442,58 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     }
     // Pair across every synced account, so a checking-side card payment and
     // the card-side payment become one transfer rather than an expense.
-    pairTransfers(activities);
+    const cardIds = new Set(accounts.filter((a) => a.wf.accountType === "CREDIT_CARD").map((a) => a.wf.id));
+    const pairs = pairTransfers(activities, (id) => cardIds.has(id));
 
     const failedAccounts = new Set<string>();
     let duplicates = 0;
-    for (const activity of activities) {
+    /** Create one activity; true if it was new. */
+    async function write(activity: SyncActivityCreate): Promise<boolean> {
       try {
         await ctx.api.activities.create(activity);
         result.created += 1;
+        return true;
       } catch (e) {
         if (isDuplicateError(e)) {
           duplicates += 1;
-          continue;
+          return false;
         }
         failedAccounts.add(activity.accountId);
         ctx.api.logger.error(
           `Transaction ${activity.sourceRecordId} failed for ${activity.accountId}: ` +
             (e as Error).message,
         );
+        return false;
       }
+    }
+
+    // A group only counts as a transfer when both legs carry it; a lone
+    // grouped leg reads as money moving to or from savings. So write the
+    // earlier leg first, and if it already existed (synced before its
+    // counterpart posted), write the later one ungrouped. Linking that pair
+    // is left to the user.
+    const paired = new Set<SyncActivityCreate>();
+    for (const pair of pairs) {
+      paired.add(pair.out).add(pair.in);
+      const [first, second] =
+        String(pair.in.activityDate) < String(pair.out.activityDate)
+          ? [pair.in, pair.out]
+          : [pair.out, pair.in];
+      if (!(await write(first))) {
+        delete second.sourceGroupId;
+        ctx.api.logger.warn(
+          `Card payment ${second.sourceRecordId} not linked: its other leg was already synced`,
+        );
+      }
+      if (!(await write(second)) && second.sourceGroupId) {
+        ctx.api.logger.warn(
+          `Card payment ${first.sourceRecordId} is linked to ${second.sourceRecordId}, which ` +
+            "wasn't written; unlink it in Wealthfolio if it shows up as savings",
+        );
+      }
+    }
+    for (const activity of activities) {
+      if (!paired.has(activity)) await write(activity);
     }
 
     const wfIds = new Set(accounts.map((a) => a.wf.id));

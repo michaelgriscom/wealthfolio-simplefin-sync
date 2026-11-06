@@ -81,6 +81,8 @@ function makeHost(opts: HostOptions = {}) {
   const secrets = new Map(Object.entries(opts.secrets ?? {}));
   const state = { keyringDown: opts.keyringDown ?? false };
   const activityKeys = new Set<string>();
+  /** What the Bridge returns; tests swap it to simulate new transactions posting. */
+  const bridgeData = { accounts: opts.accounts ?? SF_ACCOUNTS };
   const keyring = () => {
     if (state.keyringDown) throw new Error("org.freedesktop.secrets was not provided");
   };
@@ -100,7 +102,7 @@ function makeHost(opts: HostOptions = {}) {
         body: JSON.stringify({
           errors: opts.bridgeErrors ?? [],
           ...(opts.bridgeErrlist ? { errlist: opts.bridgeErrlist } : {}),
-          accounts: opts.accounts ?? SF_ACCOUNTS,
+          accounts: bridgeData.accounts,
         }),
       };
     }
@@ -171,6 +173,7 @@ function makeHost(opts: HostOptions = {}) {
     secrets,
     state,
     bridge,
+    bridgeData,
     sidebarItem,
     disable: () => disableCallbacks.forEach((cb) => cb()),
     /** Enable the addon and render its page as the host would. */
@@ -772,10 +775,11 @@ describe("transaction sync", () => {
       currency: "USD",
       comment: "BLUE BOTTLE COFFEE",
       sourceSystem: "SIMPLEFIN",
-      idempotencyKey: "simplefin:sf-card:c1",
+      activityDate: "2026-11-02",
+      idempotencyKey: "simplefin:wf-card:sf-card:c1",
     });
     // identical same-day charges stay distinct
-    expect(byId.c2.idempotencyKey).toBe("simplefin:sf-card:c2");
+    expect(byId.c2.idempotencyKey).toBe("simplefin:wf-card:sf-card:c2");
     expect(byId.c4.activityType).toBe("CREDIT");
     expect(byId.k2.activityType).toBe("DEPOSIT");
     // both legs of the card payment are one transfer
@@ -787,6 +791,44 @@ describe("transaction sync", () => {
     // the brokerage mapped to a HOLDINGS account still gets a snapshot
     expect(host.api.snapshots.save).toHaveBeenCalledTimes(1);
     expect(host.api.snapshots.save.mock.calls[0][0]).toBe("wf-retirement");
+  });
+
+  it("leaves a card payment unlinked when its bank leg was synced before", async () => {
+    // Sync 1: the bank side posts first.
+    const host = await mountMapped(
+      { "sf-card": "wf-card", "sf-checking": "wf-checking" },
+      [{ ...card, transactions: [] }, checking],
+    );
+    fireEvent.click(syncButton());
+    await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledTimes(1));
+    const bankLeg = created(host).find((a) => a.sourceRecordId === "k1")!;
+    expect(bankLeg.sourceGroupId).toBeUndefined();
+
+    // Sync 2: the card side arrives; the bank leg already exists.
+    host.bridgeData.accounts = [card, checking];
+    fireEvent.click(screen.getByRole("button", { name: /refresh from simplefin/i }));
+    await screen.findByText(/5 transactions in the last 30 days/);
+    host.api.activities.create.mockClear();
+    fireEvent.click(syncButton());
+    await waitFor(() =>
+      expect(host.api.toast.success).toHaveBeenLastCalledWith(
+        "Synced 2 account(s) (4 new transaction(s))",
+      ),
+    );
+    // the card leg is written as a plain payment, not half of a transfer
+    const cardLeg = created(host).find((a) => a.sourceRecordId === "c3")!;
+    expect(cardLeg.activityType).toBe("TRANSFER_IN");
+    expect(cardLeg.sourceGroupId).toBeUndefined();
+  });
+
+  it("fails a mapping whose Wealthfolio account wasn't found instead of snapshotting it", async () => {
+    const host = await mountMapped({ "sf-card": "wf-deleted" });
+    fireEvent.click(syncButton());
+    await waitFor(() =>
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, failed 1. See logs."),
+    );
+    expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    expect(host.api.activities.create).not.toHaveBeenCalled();
   });
 
   it("does not re-add transactions on the next sync", async () => {

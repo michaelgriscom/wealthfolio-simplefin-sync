@@ -51,10 +51,17 @@ export type SyncActivityCreate = ActivityCreate & {
   idempotencyKey: string;
 };
 
-const CARD_PAYMENT = /\b(payment|autopay|auto[\s-]?pay|pymt|pmt|thank\s*you)\b/i;
-/** A cash-side transfer to a card issuer, e.g. "CHASE CREDIT CRD AUTOPAY". */
+/** A payment received by a card, e.g. "AUTOPAY PAYMENT - THANK YOU", "DIRECTPAY FULL BALANCE". */
+const CARD_PAYMENT =
+  /\b(payment|autopay|auto[\s-]?pay|directpay|e-?pay(ment)?|pymt|pmt|thank\s*you)\b|internet\s*(payment|transfer)/i;
+/**
+ * A bank-side payment to a card, e.g. "CHASE CREDIT CRD AUTOPAY",
+ * "CAPITAL ONE CRCARDPMT", "CITI CARD ONLINE PAYMENT". Only a hint: legs are
+ * paired by amount (see pairTransfers), so a missed descriptor still pairs.
+ * Bare "autopay" is not enough; utilities and insurers use it too.
+ */
 const PAYMENT_TO_CARD =
-  /\b(credit\s*(card|crd)|card\s*(payment|pymt|pmt)|crd\s*(epay|pymt|pmt)|autopay|auto[\s-]?pay)\b/i;
+  /crcardpmt|\bcredit\s*(card|crd)\b|\b(card|crd)\b.{0,20}\b(payment|pymt|pmt|e-?pay(ment)?|autopay)\b|\b(amex|american\s*express|discover|capital\s*one|synchrony|barclay(card|s)?|applecard)\b.{0,20}\b(payment|pymt|pmt|e-?pay(ment)?)\b/i;
 const INTEREST = /\b(interest|finance\s*charge)\b/i;
 const FEE = /\b(fee|service\s*charge)\b/i;
 
@@ -104,14 +111,23 @@ export function classify(txn: SimpleFinTransaction, accountType: string | undefi
   return FEE.test(text) ? "FEE" : "WITHDRAWAL";
 }
 
-/** Unix seconds → ISO timestamp. */
-function isoDate(seconds: number): string {
-  return new Date(seconds * 1000).toISOString();
+/**
+ * Unix seconds → calendar date (YYYY-MM-DD, by UTC). Banks report dates, not
+ * times; a bare date lets Wealthfolio place it on that day in the user's own
+ * timezone instead of shifting midnight-UTC back a day for US users.
+ */
+function calendarDate(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().slice(0, 10);
 }
 
-/** Stable per-transaction key; SimpleFIN ids are only unique within an account. */
-export function idempotencyKey(sfAccountId: string, txnId: string): string {
-  return `simplefin:${sfAccountId}:${txnId}`;
+/**
+ * Stable per-transaction key. SimpleFIN ids are only unique within an account,
+ * and the key includes the Wealthfolio account so remapping a SimpleFIN
+ * account writes its transactions to the new account instead of treating them
+ * as already synced.
+ */
+export function idempotencyKey(wfAccountId: string, sfAccountId: string, txnId: string): string {
+  return `simplefin:${wfAccountId}:${sfAccountId}:${txnId}`;
 }
 
 /**
@@ -137,7 +153,7 @@ export function toActivity(
   return {
     accountId: wfAccount.id,
     activityType,
-    activityDate: isoDate(txn.transacted_at ?? txn.posted),
+    activityDate: calendarDate(txn.transacted_at ?? txn.posted),
     amount: String(Math.abs(signedAmount(txn))),
     currency,
     comment,
@@ -151,47 +167,78 @@ export function toActivity(
     },
     sourceSystem: SOURCE_SYSTEM,
     sourceRecordId: txn.id,
-    idempotencyKey: idempotencyKey(sfAccount.id, txn.id),
+    idempotencyKey: idempotencyKey(wfAccount.id, sfAccount.id, txn.id),
   };
 }
 
 /** Max days between the two legs of a card payment (ACH can take a few). */
 const TRANSFER_WINDOW_DAYS = 5;
 
+/** The two legs of one card payment, linked by a shared `sourceGroupId`. */
+export interface TransferPair {
+  out: SyncActivityCreate;
+  in: SyncActivityCreate;
+}
+
 /**
- * Give matching card-payment legs a shared `sourceGroupId`, so Wealthfolio
- * treats them as one internal transfer instead of an expense on the bank
- * side. A leg is a cash-account TRANSFER_OUT and a card TRANSFER_IN with the
- * same amount and currency within a few days of each other; each leg pairs at
- * most once, closest dates first.
+ * Link the bank-side and card-side legs of card payments, so Wealthfolio
+ * treats each as one internal transfer instead of an expense on the bank side.
  *
- * The group id is derived from both transaction ids, so it comes out the same
- * on every sync that sees both legs. A leg already written before its
- * counterpart posted stays unpaired: creates never touch existing activities.
+ * Legs pair by amount, currency and date (within a few days), not wording:
+ * bank descriptors for card payments vary too much to recognize reliably. The
+ * out leg is a cash-account outflow, the in leg a card inflow. At least one of
+ * them must already look like a transfer (TRANSFER_OUT / TRANSFER_IN), so two
+ * coincidentally equal amounts (a purchase and a refund) don't pair. A paired
+ * WITHDRAWAL becomes TRANSFER_OUT and a paired CREDIT becomes TRANSFER_IN.
+ * Each leg pairs once, most transfer-like and closest in date first.
+ *
+ * The group id comes from both legs' keys, so it is the same on every sync.
+ * Groups are only assigned here; whether they are written is up to the caller,
+ * which must not leave one leg grouped when the other already exists.
  */
-export function pairTransfers(activities: SyncActivityCreate[]): void {
-  const outs = activities.filter((a) => a.activityType === "TRANSFER_OUT" && !a.sourceGroupId);
-  const ins = activities.filter((a) => a.activityType === "TRANSFER_IN" && !a.sourceGroupId);
-  const time = (a: SyncActivityCreate) => new Date(a.activityDate).getTime();
-  const candidates: Array<{ out: SyncActivityCreate; in: SyncActivityCreate; gap: number }> = [];
+export function pairTransfers(
+  activities: SyncActivityCreate[],
+  isCard: (accountId: string) => boolean,
+): TransferPair[] {
+  const outs = activities.filter(
+    (a) =>
+      !isCard(a.accountId) &&
+      !a.sourceGroupId &&
+      (a.activityType === "TRANSFER_OUT" || a.activityType === "WITHDRAWAL"),
+  );
+  const ins = activities.filter(
+    (a) =>
+      isCard(a.accountId) &&
+      !a.sourceGroupId &&
+      (a.activityType === "TRANSFER_IN" || a.activityType === "CREDIT"),
+  );
+  const day = (a: SyncActivityCreate) => new Date(a.activityDate as string).getTime() / 86_400_000;
+  const candidates: Array<TransferPair & { penalty: number; gap: number }> = [];
   for (const out of outs) {
     for (const inn of ins) {
-      if (inn.accountId === out.accountId) continue;
       if (inn.amount !== out.amount || inn.currency !== out.currency) continue;
-      const gap = Math.abs(time(inn) - time(out));
-      if (gap <= TRANSFER_WINDOW_DAYS * 86_400_000) candidates.push({ out, in: inn, gap });
+      const penalty =
+        (out.activityType === "TRANSFER_OUT" ? 0 : 1) + (inn.activityType === "TRANSFER_IN" ? 0 : 1);
+      if (penalty > 1) continue;
+      const gap = Math.abs(day(inn) - day(out));
+      if (gap <= TRANSFER_WINDOW_DAYS) candidates.push({ out, in: inn, penalty, gap });
     }
   }
-  candidates.sort((a, b) => a.gap - b.gap);
+  candidates.sort((a, b) => a.penalty - b.penalty || a.gap - b.gap);
+  const pairs: TransferPair[] = [];
   for (const c of candidates) {
     if (c.out.sourceGroupId || c.in.sourceGroupId) continue;
     const group = `simplefin-transfer:${[c.out.idempotencyKey, c.in.idempotencyKey].sort().join("|")}`;
+    c.out.activityType = "TRANSFER_OUT";
+    c.in.activityType = "TRANSFER_IN";
     c.out.sourceGroupId = group;
     c.in.sourceGroupId = group;
+    pairs.push({ out: c.out, in: c.in });
   }
+  return pairs;
 }
 
 /** True when the host rejected a create because the activity already exists. */
 export function isDuplicateError(error: unknown): boolean {
-  return /duplicate/i.test((error as Error)?.message ?? String(error));
+  return /duplicate activity detected/i.test((error as Error)?.message ?? String(error));
 }

@@ -44,6 +44,8 @@ describe("classify", () => {
     ["-4.50", "STARBUCKS COFFEE", "WITHDRAWAL"], // "coffee" is not a fee
     ["500.00", "AUTOPAY PAYMENT - THANK YOU", "TRANSFER_IN"],
     ["250.00", "Payment Thank You-Mobile", "TRANSFER_IN"],
+    ["812.00", "DIRECTPAY FULL BALANCE", "TRANSFER_IN"],
+    ["300.00", "INTERNET PAYMENT - THANK YOU", "TRANSFER_IN"],
     ["19.99", "AMAZON.COM REFUND", "CREDIT"],
   ])("card %s %s → %s", (amount, description, expected) => {
     expect(classify(txn(amount, description), "CREDIT_CARD")).toBe(expected);
@@ -55,7 +57,12 @@ describe("classify", () => {
     ["-80.00", "CITY WATER UTILITY", "WITHDRAWAL"],
     ["-12.00", "MONTHLY SERVICE FEE", "FEE"],
     ["-500.00", "CHASE CREDIT CRD AUTOPAY", "TRANSFER_OUT"],
-    ["-300.00", "AMEX EPAYMENT ACH PMT", "WITHDRAWAL"], // no card wording: left as spending
+    ["-300.00", "AMEX EPAYMENT ACH PMT", "TRANSFER_OUT"],
+    ["-300.00", "CAPITAL ONE CRCARDPMT", "TRANSFER_OUT"],
+    ["-300.00", "CITI CARD ONLINE PAYMENT", "TRANSFER_OUT"],
+    ["-300.00", "DISCOVER E-PAYMENT", "TRANSFER_OUT"],
+    ["-120.00", "GEICO AUTOPAY", "WITHDRAWAL"], // autopay alone isn't a card payment
+    ["-80.00", "VERIZON AUTO PAY", "WITHDRAWAL"],
   ])("cash %s %s → %s", (amount, description, expected) => {
     expect(classify(txn(amount, description), "CASH")).toBe(expected);
   });
@@ -85,7 +92,7 @@ describe("toActivity", () => {
     expect(toActivity(txn("-45.10", "COFFEE", { id: "abc", memo: "note" }), sf, wf)).toEqual({
       accountId: "wf-card",
       activityType: "WITHDRAWAL",
-      activityDate: "2026-11-02T00:00:00.000Z",
+      activityDate: "2026-11-02",
       amount: "45.1",
       currency: "USD",
       comment: "COFFEE",
@@ -94,18 +101,24 @@ describe("toActivity", () => {
       },
       sourceSystem: "SIMPLEFIN",
       sourceRecordId: "abc",
-      idempotencyKey: "simplefin:sf-card:abc",
+      idempotencyKey: "simplefin:wf-card:sf-card:abc",
     });
   });
 
   it("prefers transacted_at over posted for the date", () => {
     const a = toActivity(txn("-1", "X", { transacted_at: Date.UTC(2026, 9, 30) / 1000 }), sf, wf);
-    expect(a?.activityDate).toBe("2026-10-30T00:00:00.000Z");
+    expect(a?.activityDate).toBe("2026-10-30");
   });
 
   it("skips pending transactions", () => {
     expect(toActivity(txn("-1", "X", { pending: true }), sf, wf)).toBeNull();
     expect(toActivity(txn("-1", "X", { posted: 0 }), sf, wf)).toBeNull();
+  });
+
+  it("keys by Wealthfolio account, so a remapped account syncs again", () => {
+    const a = toActivity(txn("-1", "X"), sf, wf);
+    const b = toActivity(txn("-1", "X"), sf, { ...wf, id: "wf-other" });
+    expect(a?.idempotencyKey).not.toBe(b?.idempotencyKey);
   });
 
   it("falls back to the Wealthfolio account currency", () => {
@@ -115,6 +128,7 @@ describe("toActivity", () => {
 });
 
 describe("pairTransfers", () => {
+  const isCard = (id: string) => id === "card";
   const leg = (
     key: string,
     accountId: string,
@@ -124,7 +138,7 @@ describe("pairTransfers", () => {
   ): SyncActivityCreate => ({
     accountId,
     activityType,
-    activityDate: new Date(Date.UTC(2026, 10, day)).toISOString(),
+    activityDate: `2026-11-${String(day).padStart(2, "0")}`,
     amount,
     currency: "USD",
     sourceSystem: "SIMPLEFIN",
@@ -135,29 +149,55 @@ describe("pairTransfers", () => {
   it("links a bank payment and a card payment of the same amount", () => {
     const out = leg("k1", "bank", "TRANSFER_OUT", 2);
     const inn = leg("c1", "card", "TRANSFER_IN", 3);
-    pairTransfers([out, inn]);
+    expect(pairTransfers([out, inn], isCard)).toEqual([{ out, in: inn }]);
     expect(out.sourceGroupId).toBe("simplefin-transfer:c1|k1");
     expect(inn.sourceGroupId).toBe(out.sourceGroupId);
   });
 
-  it("does not link different amounts, the same account, or legs too far apart", () => {
+  it("pairs a bank withdrawal whose wording wasn't recognized, and retypes it", () => {
+    const out = leg("k1", "bank", "WITHDRAWAL", 2);
+    const inn = leg("c1", "card", "TRANSFER_IN", 3);
+    pairTransfers([out, inn], isCard);
+    expect(out.activityType).toBe("TRANSFER_OUT");
+    expect(out.sourceGroupId).toBe(inn.sourceGroupId);
+  });
+
+  it("pairs a card credit with a recognized bank payment, and retypes it", () => {
+    const out = leg("k1", "bank", "TRANSFER_OUT", 2);
+    const inn = leg("c1", "card", "CREDIT", 3);
+    pairTransfers([out, inn], isCard);
+    expect(inn.activityType).toBe("TRANSFER_IN");
+    expect(inn.sourceGroupId).toBe(out.sourceGroupId);
+  });
+
+  it("doesn't pair a purchase with a refund just because the amounts match", () => {
+    const out = leg("k1", "bank", "WITHDRAWAL", 2);
+    const inn = leg("c1", "card", "CREDIT", 2);
+    expect(pairTransfers([out, inn], isCard)).toEqual([]);
+    expect(out.activityType).toBe("WITHDRAWAL");
+    expect(inn.activityType).toBe("CREDIT");
+  });
+
+  it("does not link different amounts, non-card accounts, or legs too far apart", () => {
     const legs = [
       leg("k1", "bank", "TRANSFER_OUT", 2),
       leg("c1", "card", "TRANSFER_IN", 2, "499"),
       leg("k2", "bank", "TRANSFER_IN", 2),
       leg("c2", "card", "TRANSFER_IN", 12),
     ];
-    pairTransfers(legs);
+    expect(pairTransfers(legs, isCard)).toEqual([]);
     expect(legs.every((l) => !l.sourceGroupId)).toBe(true);
   });
 
-  it("pairs each leg once, closest dates first", () => {
+  it("prefers the recognized payment, then the closest date", () => {
     const out = leg("k1", "bank", "TRANSFER_OUT", 5);
     const far = leg("c1", "card", "TRANSFER_IN", 1);
     const near = leg("c2", "card", "TRANSFER_IN", 6);
-    pairTransfers([out, far, near]);
+    const groceries = leg("k2", "bank", "WITHDRAWAL", 6);
+    pairTransfers([groceries, out, far, near], isCard);
     expect(near.sourceGroupId).toBe(out.sourceGroupId);
-    expect(far.sourceGroupId).toBeUndefined();
+    // the leftover card payment pairs with the leftover withdrawal of that amount
+    expect(far.sourceGroupId).toBe(groceries.sourceGroupId);
   });
 });
 
@@ -165,5 +205,6 @@ describe("isDuplicateError", () => {
   it("recognizes the host's duplicate message", () => {
     expect(isDuplicateError(new Error("Duplicate activity detected. A matching activity already exists."))).toBe(true);
     expect(isDuplicateError(new Error("Account not found"))).toBe(false);
+    expect(isDuplicateError(new Error("Duplicate asset symbol"))).toBe(false);
   });
 });

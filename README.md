@@ -57,19 +57,29 @@ so the type is inferred:
   so); a credit becomes a payment (*Transfer in*) when the description looks like one
   ("PAYMENT", "AUTOPAY", "THANK YOU"), otherwise a refund (*Credit*).
 - **Bank:** money in is a deposit (or interest); money out is a withdrawal (or a fee),
-  or a *Transfer out* when it looks like a card payment ("CREDIT CRD", "AUTOPAY").
+  or a *Transfer out* when it looks like a card payment ("CREDIT CRD", "CRCARDPMT",
+  "AMEX … PMT").
 
-When the bank-side and card-side legs of a card payment both come through in the same
-sync (same amount, within 5 days), they are linked as one transfer, so the payment
-isn't also counted as spending.
+When both sides of a card payment are synced, the bank outflow and the card payment
+are matched by amount (within 5 days) and linked as one transfer, so the payment isn't
+also counted as spending. Matching by amount also catches payments whose wording
+wasn't recognized; at least one side must look like a payment, so a purchase and an
+unrelated refund of the same amount aren't linked.
 
 Limitations:
 
 - Only the last 30 days are imported. Wealthfolio's account balance is built from
   activities, so it won't match the bank until earlier history is added, e.g. with
   Wealthfolio's CSV import.
-- Inferred types can be wrong; fix them in Wealthfolio. A leg whose counterpart posts
-  in a later sync isn't linked automatically; link it in Wealthfolio.
+- Inferred types can be wrong; fix them in Wealthfolio. When one side of a card payment
+  was synced before the other posted, the two aren't linked automatically; link them
+  in Wealthfolio.
+- A synced transaction you delete in Wealthfolio comes back on the next sync while it
+  is still within the 30-day window.
+- Remapping a SimpleFIN account to another Wealthfolio account syncs its transactions
+  into the new account; the ones already in the old account stay there.
+- Wealthfolio treats these activities as coming from an outside provider, so its own
+  device sync doesn't copy them to your other devices. Run the addon on each device.
 - Brokerage transactions aren't synced: SimpleFIN doesn't give their symbol, quantity
   or price.
 
