@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import type { ButtonHTMLAttributes, ComponentType, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import enable from "./addon";
-import type { SimpleFinAccount } from "./lib/simplefin";
+import type { SimpleFinAccount, SimpleFinError } from "./lib/simplefin";
 
 // The host provides @wealthfolio/ui at runtime; plain elements are enough here.
 vi.mock("@wealthfolio/ui", async () => {
@@ -70,6 +70,7 @@ interface HostOptions {
   keyringDown?: boolean;
   accounts?: SimpleFinAccount[];
   bridgeErrors?: string[];
+  bridgeErrlist?: SimpleFinError[];
 }
 
 /** A fake Wealthfolio host: in-memory storage/keyring and a scripted Bridge. */
@@ -95,6 +96,7 @@ function makeHost(opts: HostOptions = {}) {
         headers: {},
         body: JSON.stringify({
           errors: opts.bridgeErrors ?? [],
+          ...(opts.bridgeErrlist ? { errlist: opts.bridgeErrlist } : {}),
           accounts: opts.accounts ?? SF_ACCOUNTS,
         }),
       };
@@ -242,6 +244,18 @@ describe("initial load", () => {
     await waitFor(() =>
       expect(host.api.toast.warning).toHaveBeenCalledWith(
         "SimpleFIN reported: Connection to Vanguard may need attention",
+      ),
+    );
+  });
+
+  it("relays structured errlist messages too", async () => {
+    const host = makeHost(
+      configured({ bridgeErrlist: [{ code: "con.auth", msg: "Schwab needs reauthentication" }] }),
+    );
+    host.mount();
+    await waitFor(() =>
+      expect(host.api.toast.warning).toHaveBeenCalledWith(
+        "SimpleFIN reported: Schwab needs reauthentication",
       ),
     );
   });
@@ -580,5 +594,92 @@ describe("sync", () => {
 
     await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
     expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "1200" });
+  });
+
+  describe("untrusted empty holdings", () => {
+    const roth = (extra: Partial<SimpleFinAccount>): SimpleFinAccount => ({
+      id: "sf-roth",
+      name: "Schwab Roth",
+      currency: "USD",
+      balance: "48000",
+      conn_id: "conn-schwab",
+      ...extra,
+    });
+
+    async function syncWith(opts: HostOptions, mapping = '{"sf-roth":"wf-retirement"}') {
+      const host = makeHost(configured({ ...opts, storage: { account_mapping: mapping } }));
+      host.mount();
+      await screen.findByText("Schwab Roth");
+      fireEvent.click(syncButton());
+      await waitFor(() => expect(host.api.toast.warning).toHaveBeenCalledWith(expect.stringMatching(/^Synced/)));
+      return host;
+    }
+
+    it("skips a mapped account whose holdings are missing", async () => {
+      const host = await syncWith({ accounts: [roth({})] });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+      expect(host.api.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Schwab Roth: SimpleFIN returned no holdings"),
+      );
+    });
+
+    it("skips missing holdings when SimpleFIN also reported errors", async () => {
+      const host = await syncWith({
+        accounts: [roth({})],
+        bridgeErrors: ["Connection to Schwab may need attention"],
+      });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when an errlist entry names the account", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrlist: [{ code: "act.missingdata", msg: "Holdings unavailable", account_id: "sf-roth" }],
+      });
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 0, skipped 1. See logs.");
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when an errlist entry names the account's connection", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrlist: [{ code: "con.auth", msg: "Reauthenticate", conn_id: "conn-schwab" }],
+      });
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("skips empty holdings when only plain-text errors were reported", async () => {
+      const host = await syncWith({
+        accounts: [roth({ holdings: [] })],
+        bridgeErrors: ["Something went wrong"],
+      });
+      expect(host.api.snapshots.save).not.toHaveBeenCalled();
+    });
+
+    it("writes empty holdings when the errlist is about another account", async () => {
+      const host = makeHost(
+        configured({
+          accounts: [roth({ holdings: [] })],
+          bridgeErrlist: [{ code: "act.failed", msg: "Other failed", account_id: "sf-other", conn_id: "conn-other" }],
+          storage: { account_mapping: '{"sf-roth":"wf-retirement"}' },
+        }),
+      );
+      host.mount();
+      await screen.findByText("Schwab Roth");
+      fireEvent.click(syncButton());
+      await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
+      expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "48000" });
+    });
+
+    it("skips the whole Wealthfolio account when one grouped member is missing holdings", async () => {
+      const host = await syncWith(
+        { accounts: [SF_ACCOUNTS[0], SF_ACCOUNTS[1], roth({})] },
+        '{"sf-taxable":"wf-taxable","sf-ira":"wf-retirement","sf-roth":"wf-retirement"}',
+      );
+      expect(host.api.toast.warning).toHaveBeenCalledWith("Synced 1, skipped 1. See logs.");
+      expect(host.api.snapshots.save.mock.calls.map((c) => c[0])).toEqual(["wf-taxable"]);
+    });
   });
 });

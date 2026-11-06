@@ -8,9 +8,12 @@ import {
   explainRequestError,
   isAccessUrl,
   resolveAccessUrl,
+  errorMessages,
   splitAccessUrl,
+  untrustedHoldingsReason,
   type NetworkRequestFn,
   type SimpleFinAccount,
+  type SimpleFinResponse,
   type SplitAccessUrl,
 } from "./lib/simplefin";
 
@@ -78,6 +81,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
    */
   const [pending, setPending] = useState<SplitAccessUrl | null>(null);
   const [sfAccounts, setSfAccounts] = useState<SimpleFinAccount[]>([]);
+  /** Errors from the last account load, which decide whether empty holdings are trusted. */
+  const [sfIssues, setSfIssues] = useState<Pick<SimpleFinResponse, "errors" | "errlist">>({});
   const [wfAccounts, setWfAccounts] = useState<WfAccount[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -244,9 +249,11 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       // Keep every account; which ones are shown is decided at render time, so a
       // mapped account that has sold all its holdings stays listed and synced.
       setSfAccounts(response.accounts);
+      setSfIssues({ errors: response.errors, errlist: response.errlist });
       const investment = response.accounts.filter(hasHoldings);
-      if (response.errors?.length) {
-        ctx.api.toast.warning(`SimpleFIN reported: ${response.errors.join("; ")}`);
+      const messages = errorMessages(response);
+      if (messages.length) {
+        ctx.api.toast.warning(`SimpleFIN reported: ${messages.join("; ")}`);
       }
       if (!opts.silent) {
         ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
@@ -298,6 +305,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setError(null);
     let synced = 0;
     let failed = 0;
+    let skipped = 0;
     try {
       // Group SimpleFIN accounts by their target Wealthfolio account so several
       // mapped to the same account are aggregated into one snapshot (matching
@@ -311,6 +319,19 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         else byWfAccount.set(wfAccountId, [account]);
       }
       for (const [wfAccountId, accounts] of byWfAccount) {
+        // Skip the whole group if any member's holdings can't be trusted: a
+        // merged snapshot without that member's positions would drop them too.
+        const untrusted = accounts
+          .map((a) => ({ a, reason: untrustedHoldingsReason(a, sfIssues) }))
+          .filter((u) => u.reason !== null);
+        if (untrusted.length) {
+          skipped += 1;
+          ctx.api.logger.warn(
+            `Skipped ${wfAccountId}, keeping its current positions: ` +
+              untrusted.map((u) => `${u.a.name}: ${u.reason}`).join("; "),
+          );
+          continue;
+        }
         const merged = aggregateSnapshots(accounts.map((a) => mapAccountToSnapshot(a)));
         try {
           // No snapshot date: Wealthfolio dates it with its own "today" (in its
@@ -328,12 +349,15 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
           );
         }
       }
-      if (synced === 0 && failed === 0) {
+      if (synced === 0 && failed === 0 && skipped === 0) {
         ctx.api.toast.info("No mapped accounts to sync. Map an account first.");
-      } else if (failed === 0) {
+      } else if (failed === 0 && skipped === 0) {
         ctx.api.toast.success(`Synced ${synced} account(s)`);
       } else {
-        ctx.api.toast.warning(`Synced ${synced}, failed ${failed}. See logs.`);
+        const parts = [`Synced ${synced}`];
+        if (failed) parts.push(`failed ${failed}`);
+        if (skipped) parts.push(`skipped ${skipped}`);
+        ctx.api.toast.warning(`${parts.join(", ")}. See logs.`);
       }
     } catch (e) {
       setError((e as Error).message);
