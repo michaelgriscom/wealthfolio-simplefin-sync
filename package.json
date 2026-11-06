@@ -27,6 +27,8 @@
     "bundle": "pnpm clean && pnpm build && pnpm package",
     "lint": "tsc --noEmit",
     "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "check-version": "node scripts/check-version.mjs"
   },
   "dependencies": {
@@ -39,15 +41,20 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",
-    "@types/node": "^20.19.33",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.2.13",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^5.1.0",
     "@wealthfolio/addon-dev-tools": "^3.6.2",
+    "jsdom": "^31.0.0",
     "tailwindcss": "^4.1.18",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
-    "vite": "^7.3.2"
+    "vite": "^7.3.2",
+    "vitest": "^5.1.0"
   },
   "files": [
     "dist/",

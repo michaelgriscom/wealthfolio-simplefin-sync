@@ -8,9 +8,12 @@ import {
   explainRequestError,
   isAccessUrl,
   resolveAccessUrl,
+  errorMessages,
   splitAccessUrl,
+  untrustedHoldingsReason,
   type NetworkRequestFn,
   type SimpleFinAccount,
+  type SimpleFinResponse,
   type SplitAccessUrl,
 } from "./lib/simplefin";
 
@@ -45,6 +48,10 @@ interface WfAccount {
 /** Whether the host's secret store is usable. Probed once on mount. */
 type KeyringState = "probing" | "ok" | "unavailable";
 
+function hasHoldings(account: SimpleFinAccount): boolean {
+  return (account.holdings?.length ?? 0) > 0;
+}
+
 /** Run an operation, reporting whether the secret store rejected it. */
 async function trySecret<T>(op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
   try {
@@ -74,6 +81,8 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
    */
   const [pending, setPending] = useState<SplitAccessUrl | null>(null);
   const [sfAccounts, setSfAccounts] = useState<SimpleFinAccount[]>([]);
+  /** Errors from the last account load, which decide whether empty holdings are trusted. */
+  const [sfIssues, setSfIssues] = useState<Pick<SimpleFinResponse, "errors" | "errlist">>({});
   const [wfAccounts, setWfAccounts] = useState<WfAccount[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -194,8 +203,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     if (!value && !pending) return;
 
     // Claiming a setup token consumes it, so refuse before spending it when we
-    // already know the credential has nowhere to go.
-    if (keyring === "unavailable") {
+    // already know the credential has nowhere to go. A held credential is
+    // already claimed, so retrying its write spends nothing.
+    if (keyring === "unavailable" && !pending) {
       setError(KEYRING_HELP);
       return;
     }
@@ -203,14 +213,17 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setBusy(true);
     setError(null);
     try {
-      // Accept either a paste of the access URL or the one-time setup token.
-      const wasToken = Boolean(value) && !isAccessUrl(value);
+      // A held credential wins over the input: after a failed write the input
+      // still holds the spent token, and claiming it again would fail.
       let split: SplitAccessUrl;
-      if (value) {
+      let wasToken = false;
+      if (pending) {
+        split = pending;
+      } else {
+        // Accept either a paste of the access URL or the one-time setup token.
+        wasToken = !isAccessUrl(value);
         split = splitAccessUrl(await resolveAccessUrl(value, request));
         setPending(split);
-      } else {
-        split = pending!;
       }
       await ctx.api.storage.set(STORAGE_BASE_URL, split.baseUrl);
       await persistCredentials(split.credentials);
@@ -233,10 +246,14 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setError(null);
     try {
       const response = await fetchAccounts(url, SECRET_CREDENTIALS, request);
-      const investment = response.accounts.filter((a) => (a.holdings?.length ?? 0) > 0);
-      setSfAccounts(investment);
-      if (response.errors?.length) {
-        ctx.api.toast.warning(`SimpleFIN reported: ${response.errors.join("; ")}`);
+      // Keep every account; which ones are shown is decided at render time, so a
+      // mapped account that has sold all its holdings stays listed and synced.
+      setSfAccounts(response.accounts);
+      setSfIssues({ errors: response.errors, errlist: response.errlist });
+      const investment = response.accounts.filter(hasHoldings);
+      const messages = errorMessages(response);
+      if (messages.length) {
+        ctx.api.toast.warning(`SimpleFIN reported: ${messages.join("; ")}`);
       }
       if (!opts.silent) {
         ctx.api.toast.success(`Found ${investment.length} investment account(s) with holdings`);
@@ -286,9 +303,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   async function syncNow() {
     setBusy(true);
     setError(null);
-    const date = new Date().toISOString().slice(0, 10);
     let synced = 0;
     let failed = 0;
+    let skipped = 0;
     try {
       // Group SimpleFIN accounts by their target Wealthfolio account so several
       // mapped to the same account are aggregated into one snapshot (matching
@@ -302,13 +319,28 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
         else byWfAccount.set(wfAccountId, [account]);
       }
       for (const [wfAccountId, accounts] of byWfAccount) {
+        // Skip the whole group if any member's holdings can't be trusted: a
+        // merged snapshot without that member's positions would drop them too.
+        const untrusted = accounts
+          .map((a) => ({ a, reason: untrustedHoldingsReason(a, sfIssues) }))
+          .filter((u) => u.reason !== null);
+        if (untrusted.length) {
+          skipped += 1;
+          ctx.api.logger.warn(
+            `Skipped ${wfAccountId}, keeping its current positions: ` +
+              untrusted.map((u) => `${u.a.name}: ${u.reason}`).join("; "),
+          );
+          continue;
+        }
         const merged = aggregateSnapshots(accounts.map((a) => mapAccountToSnapshot(a)));
         try {
-          await ctx.api.snapshots.save(wfAccountId, merged.positions, merged.cashBalances, date);
+          // No snapshot date: Wealthfolio dates it with its own "today" (in its
+          // timezone setting) and rejects dates after that, so ours could fail.
+          await ctx.api.snapshots.save(wfAccountId, merged.positions, merged.cashBalances);
           synced += 1;
           ctx.api.logger.info(
             `Saved snapshot for ${accounts.length} account(s) → ${wfAccountId} ` +
-              `(${merged.positions.length} positions) on ${date}`,
+              `(${merged.positions.length} positions)`,
           );
         } catch (e) {
           failed += 1;
@@ -317,12 +349,15 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
           );
         }
       }
-      if (synced === 0 && failed === 0) {
+      if (synced === 0 && failed === 0 && skipped === 0) {
         ctx.api.toast.info("No mapped accounts to sync. Map an account first.");
-      } else if (failed === 0) {
+      } else if (failed === 0 && skipped === 0) {
         ctx.api.toast.success(`Synced ${synced} account(s)`);
       } else {
-        ctx.api.toast.warning(`Synced ${synced}, failed ${failed}. See logs.`);
+        const parts = [`Synced ${synced}`];
+        if (failed) parts.push(`failed ${failed}`);
+        if (skipped) parts.push(`skipped ${skipped}`);
+        ctx.api.toast.warning(`${parts.join(", ")}. See logs.`);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -332,6 +367,10 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   }
 
   const mappedCount = Object.keys(mapping).length;
+  // Offer accounts with holdings, plus any already mapped: a fully sold account
+  // has none, but still needs an all-cash snapshot or Wealthfolio keeps its old
+  // positions.
+  const listedAccounts = sfAccounts.filter((a) => hasHoldings(a) || Boolean(mapping[a.id]));
 
   return (
     <Page>
@@ -381,6 +420,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
                 className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
                 placeholder={isConfigured ? "•••••••• (saved — paste a new token to replace)" : "Paste your SimpleFIN setup token or access URL"}
                 value={accessUrl}
+                // While a claimed credential is held, Retry save stores it and
+                // ignores the input, so don't let a new paste look like it counts.
+                disabled={Boolean(pending)}
                 onChange={(e) => setAccessUrl(e.target.value)}
               />
               <Button onClick={saveAccessUrl} disabled={busy || (!accessUrl.trim() && !pending)}>
@@ -391,7 +433,7 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
               <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
                 Your token was claimed successfully but couldn’t be stored. It has already been
                 consumed, so don’t paste it again — fix the keyring problem above, then click
-                “Retry save”.
+                “Retry save” to store the held credential.
               </p>
             ) : null}
           </section>
@@ -405,14 +447,14 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
                 Refresh from SimpleFIN
               </Button>
             </div>
-            {sfAccounts.length === 0 ? (
+            {listedAccounts.length === 0 ? (
               <p className="text-muted-foreground text-sm">
                 No investment accounts loaded yet. Save your token, then click “Refresh from
                 SimpleFIN”.
               </p>
             ) : (
               <ul className="flex flex-col gap-3">
-                {sfAccounts.map((account) => (
+                {listedAccounts.map((account) => (
                   <li
                     key={account.id}
                     className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"

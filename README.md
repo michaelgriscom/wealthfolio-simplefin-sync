@@ -60,6 +60,7 @@ pnpm install
 pnpm build      # bundle to dist/addon.js
 pnpm bundle     # build + package dist/wealthfolio-simplefin-sync-<version>.zip
 pnpm type-check # tsc --noEmit
+pnpm test       # unit tests (pnpm test:coverage adds coverage)
 ```
 
 For live reload against a local Wealthfolio dev build, see the
