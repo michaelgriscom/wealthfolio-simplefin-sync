@@ -129,7 +129,7 @@ function makeHost(opts: HostOptions = {}) {
           _accountId: string,
           _positions: unknown[],
           _cash: Record<string, string>,
-          _date: string,
+          _date?: string,
         ): Promise<void> => undefined,
       ),
     },
@@ -467,8 +467,6 @@ describe("sync", () => {
   const syncButton = () => screen.getByRole("button", { name: /sync now/i });
 
   it("saves one aggregated snapshot per Wealthfolio account", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
     const host = makeHost(
       configured({
         storage: {
@@ -493,13 +491,11 @@ describe("sync", () => {
       [{ symbol: "VTI", quantity: "15", currency: "USD", averageCost: "166.67" }],
       // (2600 - 2000) + (1050 - 1000)
       { USD: "650" },
-      "2026-11-06",
     );
     expect(host.api.snapshots.save).toHaveBeenCalledWith(
       "wf-retirement",
       [{ symbol: "SCHB", quantity: "3", currency: "USD" }],
       {},
-      "2026-11-06",
     );
   });
 
@@ -547,11 +543,9 @@ describe("sync", () => {
     expect(host.api.snapshots.save).not.toHaveBeenCalled();
   });
 
-  it("dates the snapshot with the local date", async () => {
-    // The suite pins TZ=UTC, where local and UTC dates agree.
-    vi.stubEnv("TZ", "America/New_York");
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-07T01:30:00Z")); // 8:30pm Nov 6 in New York
+  it("lets Wealthfolio date the snapshot", async () => {
+    // Wealthfolio rejects dates after its own today, computed in its timezone
+    // setting, so the addon must not pass a date of its own.
     const host = makeHost(configured({ storage: { account_mapping: '{"sf-roth":"wf-retirement"}' } }));
     host.mount();
     await screen.findByText("Schwab Roth");
@@ -559,12 +553,10 @@ describe("sync", () => {
     fireEvent.click(syncButton());
 
     await waitFor(() => expect(host.api.snapshots.save).toHaveBeenCalled());
-    expect(host.api.snapshots.save.mock.calls[0][3]).toBe("2026-11-06");
+    expect(host.api.snapshots.save.mock.calls[0]).toHaveLength(3);
   });
 
   it("writes an all-cash snapshot for a mapped account with no holdings", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
     const soldOff: SimpleFinAccount = {
       id: "sf-roth",
       name: "Schwab Roth",
@@ -587,6 +579,6 @@ describe("sync", () => {
     fireEvent.click(syncButton());
 
     await waitFor(() => expect(host.api.toast.success).toHaveBeenCalledWith("Synced 1 account(s)"));
-    expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "1200" }, "2026-11-06");
+    expect(host.api.snapshots.save).toHaveBeenCalledWith("wf-retirement", [], { USD: "1200" });
   });
 });

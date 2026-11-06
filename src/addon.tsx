@@ -45,12 +45,6 @@ interface WfAccount {
 /** Whether the host's secret store is usable. Probed once on mount. */
 type KeyringState = "probing" | "ok" | "unavailable";
 
-/** `YYYY-MM-DD` in the local time zone (not UTC, which `toISOString` uses). */
-function localDate(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 function hasHoldings(account: SimpleFinAccount): boolean {
   return (account.holdings?.length ?? 0) > 0;
 }
@@ -302,7 +296,6 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
   async function syncNow() {
     setBusy(true);
     setError(null);
-    const date = localDate(new Date());
     let synced = 0;
     let failed = 0;
     try {
@@ -320,11 +313,13 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
       for (const [wfAccountId, accounts] of byWfAccount) {
         const merged = aggregateSnapshots(accounts.map((a) => mapAccountToSnapshot(a)));
         try {
-          await ctx.api.snapshots.save(wfAccountId, merged.positions, merged.cashBalances, date);
+          // No snapshot date: Wealthfolio dates it with its own "today" (in its
+          // timezone setting) and rejects dates after that, so ours could fail.
+          await ctx.api.snapshots.save(wfAccountId, merged.positions, merged.cashBalances);
           synced += 1;
           ctx.api.logger.info(
             `Saved snapshot for ${accounts.length} account(s) → ${wfAccountId} ` +
-              `(${merged.positions.length} positions) on ${date}`,
+              `(${merged.positions.length} positions)`,
           );
         } catch (e) {
           failed += 1;

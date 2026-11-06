@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.{ts,tsx}"],
     environment: "node",
-    // Snapshot dates use the clock, so pin the zone. Tests can stub another.
+    // Pin the zone so any date handling is deterministic. Tests can stub another.
     env: { TZ: "UTC" },
     coverage: {
       provider: "v8",
