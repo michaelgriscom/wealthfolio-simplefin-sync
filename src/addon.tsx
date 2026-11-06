@@ -194,8 +194,9 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     if (!value && !pending) return;
 
     // Claiming a setup token consumes it, so refuse before spending it when we
-    // already know the credential has nowhere to go.
-    if (keyring === "unavailable") {
+    // already know the credential has nowhere to go. A held credential is
+    // already claimed, so retrying its write spends nothing.
+    if (keyring === "unavailable" && !pending) {
       setError(KEYRING_HELP);
       return;
     }
@@ -203,14 +204,17 @@ function SimpleFinSyncPage({ ctx }: { ctx: AddonContext }) {
     setBusy(true);
     setError(null);
     try {
-      // Accept either a paste of the access URL or the one-time setup token.
-      const wasToken = Boolean(value) && !isAccessUrl(value);
+      // A held credential wins over the input: after a failed write the input
+      // still holds the spent token, and claiming it again would fail.
       let split: SplitAccessUrl;
-      if (value) {
+      let wasToken = false;
+      if (pending) {
+        split = pending;
+      } else {
+        // Accept either a paste of the access URL or the one-time setup token.
+        wasToken = !isAccessUrl(value);
         split = splitAccessUrl(await resolveAccessUrl(value, request));
         setPending(split);
-      } else {
-        split = pending!;
       }
       await ctx.api.storage.set(STORAGE_BASE_URL, split.baseUrl);
       await persistCredentials(split.credentials);

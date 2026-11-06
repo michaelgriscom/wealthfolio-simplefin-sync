@@ -359,15 +359,7 @@ describe("saving credentials", () => {
     expect(host.secrets.has("bridge_credentials")).toBe(false);
   });
 
-  // BUG: Retry save can't succeed:
-  //  1. A failed write sets `keyring` to "unavailable", and saveAccessUrl's
-  //     "don't spend a token" guard then blocks every save, including a retry
-  //     of the already-claimed credential.
-  //  2. The input still holds the spent token (it is cleared only on success),
-  //     and a non-empty input wins over `pending`, so the retry claims it again.
-  // A reload drops `pending`, and the access is lost. Fix both, then change
-  // `it.fails` to `it`.
-  it.fails("Retry save persists the held credential once the keyring is back", async () => {
+  it("Retry save persists the held credential once the keyring is back", async () => {
     const host = makeHost();
     host.mount();
     await waitFor(() => expect(host.api.secrets.get).toHaveBeenCalled());
