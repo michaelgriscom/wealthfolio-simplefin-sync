@@ -1,0 +1,89 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "reviewers": [
+    "michaelgriscom"
+  ],
+  "assignees": [
+    "michaelgriscom"
+  ],
+  "dependencyDashboard": true,
+
+  "description": [
+    "Weekly, batched. Non-major updates automerge once 7 days old and CI (type-check,",
+    "bundle build) is green; majors and the host packages stay manual.",
+    "Only build output ships: the Wealthfolio SDK/UI and React are host-provided externals",
+    "(vite.config.ts). Build tooling is chore(deps); host packages are fix(deps)."
+  ],
+
+  "timezone": "America/New_York",
+  "schedule": ["* 0-4 * * 1"],
+  "prConcurrentLimit": 5,
+  "semanticCommits": "enabled",
+
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "vulnerabilityAlerts": {
+    "description": "Security fixes skip the schedule, but not all the soak: Renovate's default drops minimumReleaseAge to none here.",
+    "minimumReleaseAge": "3 days"
+  },
+
+  "automerge": false,
+  "platformAutomerge": false,
+  "ignoreTests": false,
+
+  "packageRules": [
+    {
+      "description": "Non-major updates merge themselves once minimumReleaseAge has passed and CI is green. automergeType branch: Renovate tests the renovate/* branch and fast-forwards main without opening a PR, so CI's push run is the only check (the PR-title lint never runs). Renovate's own renovate/* statuses don't count, so if CI doesn't run the branch stays pending and nothing merges. prNotPendingHours is raised because a PR opened after the default 25 pending hours would also be automerged, on the title lint alone.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": true,
+      "automergeType": "branch",
+      "prNotPendingHours": 8760
+    },
+    {
+      "description": "GitHub Actions never automerge (pins, version bumps or digests). Tag dates are set by the action's author, so the age gate means little, and actions run with write tokens and the release PAT. A stale pin is fine.",
+      "matchManagers": ["github-actions"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "non-major dev dependencies"
+    },
+    {
+      "description": "Provided by the Wealthfolio host at runtime, so they set host compatibility and ship as fix(deps). Never automerged: each bump needs a manifest.json edit. @types/react(-dom) stay with the dev deps.",
+      "matchPackageNames": [
+        "@wealthfolio/**",
+        "react",
+        "react-dom"
+      ],
+      "groupName": "Wealthfolio host packages",
+      "semanticCommitType": "fix",
+      "prBodyNotes": [
+        "Update `manifest.json` to match: `sdkVersion`, `hostDependencies`, and `minWealthfolioVersion` if the SDK needs a newer host."
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Keep package.json in step with manifest.json's sdkVersion.",
+      "matchPackageNames": ["@wealthfolio/**"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "actions/setup-node and @types/node together. Build-time only, so chore(deps).",
+      "matchDepNames": ["node", "@types/node"],
+      "groupName": "Node.js",
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Majors soak longer.",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "14 days",
+      "addLabels": ["major-update"]
+    }
+  ]
+}
